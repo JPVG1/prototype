@@ -1,435 +1,425 @@
 """
-Real-Time Streaming Events - Orchestration Backend
-Supports:
-- Multiple Processes (with up to ~50 cases) and per-process Workflow Nets (Petri Nets)
-- Time Snapshot Simulation (4 selectable timestamps showing cases arriving and progressing over time)
-- Tracking newly arrived cases from the Last Update
-- Two Detection Methods (Sequence Pattern Matching removed):
-  1. Petri-Net Conformance Checking
-  2. SLA & Timestamp Monitoring (visual deadline tracking per step and per case)
+Real-Time Process Monitor — Stream Orchestrator & Multi-Process Case Generator.
+
+Manages:
+  - 3 Intraday Processes with Petri-Net (WorkflowNet) models designed for a 1–3 hour horizon
+  - 4 Stream Time Snapshots (09:00, 11:00, 13:30, 16:00)
+  - 2 Detection Methods:
+      1) Petri-Net Conformance Checking (Online A* Prefix Alignment)
+      2) SLA & Timestamp Monitoring (Step Deadlines + Overall 3-Hour Case SLA)
 """
 
 from __future__ import annotations
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional
 
-from backend.conformance import IncrementalPrefixAligner, Place, Transition, WorkflowNet
-
-
-TIME_SNAPSHOTS = [
-    {
-        "id": "T1",
-        "timestamp": "2026-11-03 09:00:00",
-        "prev_timestamp": "2026-11-03 00:00:00",
-        "short_label": "09:00",
-        "label": "2026-11-03 09:00 (Update 1 — Morning Batch)",
-        "description": "Initial morning stream batch across all active processes.",
-    },
-    {
-        "id": "T2",
-        "timestamp": "2026-11-03 11:00:00",
-        "prev_timestamp": "2026-11-03 09:00:00",
-        "short_label": "11:00",
-        "label": "2026-11-03 11:00 (Update 2 — Mid-Morning Stream)",
-        "description": "Earlier cases progress further; new mid-morning cases arrive.",
-    },
-    {
-        "id": "T3",
-        "timestamp": "2026-11-03 13:30:00",
-        "prev_timestamp": "2026-11-03 11:00:00",
-        "short_label": "13:30",
-        "label": "2026-11-03 13:30 (Update 3 — Afternoon Stream)",
-        "description": "Midday progression and newly arrived afternoon cases.",
-    },
-    {
-        "id": "T4",
-        "timestamp": "2026-11-03 16:00:00",
-        "prev_timestamp": "2026-11-03 13:30:00",
-        "short_label": "16:00 (Latest)",
-        "label": "2026-11-03 16:00 (Update 4 — Latest Stream State)",
-        "description": "Latest stream state with up to 48 cases in Order-to-Cash.",
-    },
-]
+from backend.conformance import (
+    OnlineAlignmentTracker,
+    Place,
+    Transition,
+    WorkflowNet,
+)
 
 
-def _build_process_definitions() -> Tuple[Dict[str, WorkflowNet], List[dict]]:
-    nets: Dict[str, WorkflowNet] = {}
-
-    # Process 1: Order-to-Cash & Credit Approval (up to 48 cases)
-    nets["PROC-001"] = WorkflowNet(
-        places={
-            "p1": Place("p1", "Source (Start)", "p1 (Start)"),
-            "p2": Place("p2", "App Registered", "p2 (Registered)"),
-            "p3": Place("p3", "Identity Checked", "p3 (ID Checked)"),
-            "p4": Place("p4", "Risk Assessed", "p4 (Risk Checked)"),
-            "p5": Place("p5", "Approved", "p5 (Approved)"),
-            "p6": Place("p6", "Offer Sent", "p6 (Offer Sent)"),
-            "p7": Place("p7", "Sink (Closed)", "p7 (Closed)"),
-        },
-        transitions={
-            "t1": Transition("t1", "Create Application", "Create Application", "Create App", ["p1"], ["p2"], sla_limit_min=15),
-            "t2": Transition("t2", "Verify Identity", "Verify Identity", "Verify ID", ["p2"], ["p3"], sla_limit_min=30),
-            "t3": Transition("t3", "Credit & Risk Check", "Credit & Risk Check", "Credit Check", ["p3"], ["p4"], sla_limit_min=45),
-            "t4": Transition("t4", "Manager Approval", "Manager Approval", "Mgr Approval", ["p4"], ["p5"], sla_limit_min=45),
-            "t5": Transition("t5", "Send Offer", "Send Offer", "Send Offer", ["p5"], ["p6"], sla_limit_min=25),
-            "t6": Transition("t6", "Finalize & Disburse", "Finalize & Disburse", "Finalize", ["p6"], ["p7"], sla_limit_min=40),
-            "t7": Transition("t7", "Request Documents", "Request Documents", "Request Docs", ["p3"], ["p2"], sla_limit_min=35, is_rework=True),
-        },
+def _create_linear_rework_net(
+    place_specs: List[tuple],
+    trans_specs: List[tuple],
+) -> WorkflowNet:
+    places = {
+        pid: Place(pid, pname, pshort)
+        for pid, pname, pshort in place_specs
+    }
+    transitions = {
+        tid: Transition(
+            id=tid,
+            label=tlabel,
+            short_label=tshort,
+            unit=tunit,
+            sla_limit_min=tsla,
+        )
+        for tid, tlabel, tshort, tunit, tsla in trans_specs
+    }
+    preset = {
+        "t1": {"p1"},
+        "t2": {"p2"},
+        "t3": {"p3"},
+        "t4": {"p4"},
+        "t5": {"p5"},
+        "t6": {"p6"},
+        "t7": {"p3"},
+    }
+    postset = {
+        "t1": {"p2"},
+        "t2": {"p3"},
+        "t3": {"p4"},
+        "t4": {"p5"},
+        "t5": {"p6"},
+        "t6": {"p7"},
+        "t7": {"p2"},
+    }
+    return WorkflowNet(
+        places=places,
+        transitions=transitions,
+        preset=preset,
+        postset=postset,
+        initial_marking=frozenset(["p1"]),
+        final_marking=frozenset(["p7"]),
     )
 
-    # Process 2: Purchase-to-Pay & Invoice Approval (up to 28 cases)
-    nets["PROC-002"] = WorkflowNet(
-        places={
-            "p1": Place("p1", "Source (Start)", "p1 (Start)"),
-            "p2": Place("p2", "Requisition Logged", "p2 (PR Logged)"),
-            "p3": Place("p3", "Vendor Verified", "p3 (Vendor OK)"),
-            "p4": Place("p4", "Budget Cleared", "p4 (Budget OK)"),
-            "p5": Place("p5", "PO Issued", "p5 (PO Sent)"),
-            "p6": Place("p6", "Goods Received", "p6 (Goods Recv)"),
-            "p7": Place("p7", "Sink (Paid)", "p7 (Paid)"),
-        },
-        transitions={
-            "t1": Transition("t1", "Create Purchase Req", "Create Purchase Req", "Create PR", ["p1"], ["p2"], sla_limit_min=20),
-            "t2": Transition("t2", "Verify Vendor", "Verify Vendor", "Verify Vendor", ["p2"], ["p3"], sla_limit_min=30),
-            "t3": Transition("t3", "Budget Approval", "Budget Approval", "Budget Appr", ["p3"], ["p4"], sla_limit_min=45),
-            "t4": Transition("t4", "Issue Purchase Order", "Issue Purchase Order", "Issue PO", ["p4"], ["p5"], sla_limit_min=25),
-            "t5": Transition("t5", "Confirm Goods Receipt", "Confirm Goods Receipt", "Goods Receipt", ["p5"], ["p6"], sla_limit_min=50),
-            "t6": Transition("t6", "Release Invoice Payment", "Release Invoice Payment", "Pay Invoice", ["p6"], ["p7"], sla_limit_min=30),
-            "t7": Transition("t7", "Revise Quote", "Revise Quote", "Revise Quote", ["p3"], ["p2"], sla_limit_min=35, is_rework=True),
-        },
+
+def _build_process_definitions() -> List[dict]:
+    # Process 1: Order-to-Cash & Credit Approval (Intraday 3-hour SLA)
+    net_1 = _create_linear_rework_net(
+        place_specs=[
+            ("p1", "Application Received", "p1 (Start)"),
+            ("p2", "Application Created", "p2 (App Created)"),
+            ("p3", "Identity Verified", "p3 (ID Verified)"),
+            ("p4", "Credit Risk Checked", "p4 (Risk Checked)"),
+            ("p5", "Credit Approved", "p5 (Approved)"),
+            ("p6", "Binding Offer Sent", "p6 (Offer Sent)"),
+            ("p7", "Completed & Disbursed", "p7 (Sink)"),
+        ],
+        trans_specs=[
+            ("t1", "Create Application", "Create App", "Sales Desk", 20),
+            ("t2", "Verify Identity", "Verify ID", "KYC Service", 30),
+            ("t3", "Check Credit Risk", "Credit Check", "Risk Engine", 40),
+            ("t4", "Approve Credit", "Approve", "Underwriting", 35),
+            ("t5", "Send Binding Offer", "Send Offer", "Sales Desk", 25),
+            ("t6", "Finalize & Disburse", "Finalize", "Core Banking", 30),
+            ("t7", "Re-verify Identity", "Re-verify ID", "KYC Service", 25),
+        ],
     )
 
-    # Process 3: Customer Onboarding & KYC Compliance (up to 16 cases)
-    nets["PROC-003"] = WorkflowNet(
-        places={
-            "p1": Place("p1", "Source (Start)", "p1 (Start)"),
-            "p2": Place("p2", "Profile Created", "p2 (Profile)"),
-            "p3": Place("p3", "ID Docs Checked", "p3 (Docs OK)"),
-            "p4": Place("p4", "Sanctions Screened", "p4 (KYC OK)"),
-            "p5": Place("p5", "Compliance Approved", "p5 (Cleared)"),
-            "p6": Place("p6", "Contract Signed", "p6 (Signed)"),
-            "p7": Place("p7", "Sink (Active)", "p7 (Active)"),
-        },
-        transitions={
-            "t1": Transition("t1", "Register Customer", "Register Customer", "Register", ["p1"], ["p2"], sla_limit_min=15),
-            "t2": Transition("t2", "Check ID Documents", "Check ID Documents", "Check Docs", ["p2"], ["p3"], sla_limit_min=30),
-            "t3": Transition("t3", "Sanctions & PEP Check", "Sanctions & PEP Check", "KYC Check", ["p3"], ["p4"], sla_limit_min=40),
-            "t4": Transition("t4", "Compliance Sign-Off", "Compliance Sign-Off", "Compliance", ["p4"], ["p5"], sla_limit_min=45),
-            "t5": Transition("t5", "Countersign Contract", "Countersign Contract", "Sign Contract", ["p5"], ["p6"], sla_limit_min=25),
-            "t6": Transition("t6", "Activate Account", "Activate Account", "Activate", ["p6"], ["p7"], sla_limit_min=25),
-            "t7": Transition("t7", "Re-Upload ID Scan", "Re-Upload ID Scan", "Re-Upload ID", ["p3"], ["p2"], sla_limit_min=30, is_rework=True),
-        },
+    # Process 2: Purchase-to-Pay & Express Invoice Approval (Intraday 3-hour SLA)
+    net_2 = _create_linear_rework_net(
+        place_specs=[
+            ("p1", "Requisition Created", "p1 (Start)"),
+            ("p2", "Requisition Submitted", "p2 (Submitted)"),
+            ("p3", "Vendor Validated", "p3 (Vendor OK)"),
+            ("p4", "Budget Checked", "p4 (Budget OK)"),
+            ("p5", "PO Issued", "p5 (PO Issued)"),
+            ("p6", "Invoice Verified", "p6 (Invoice OK)"),
+            ("p7", "Payment Executed", "p7 (Paid)"),
+        ],
+        trans_specs=[
+            ("t1", "Submit Requisition", "Submit Req", "Requester", 20),
+            ("t2", "Validate Vendor Data", "Validate Vendor", "Procurement", 30),
+            ("t3", "Check Budget Limit", "Budget Check", "Controlling", 35),
+            ("t4", "Issue Purchase Order", "Issue PO", "Procurement Lead", 30),
+            ("t5", "Verify E-Invoice", "Verify Invoice", "Accounts Payable", 35),
+            ("t6", "Execute Payment", "Pay Invoice", "Treasury", 30),
+            ("t7", "Re-validate Vendor", "Re-validate", "Procurement", 25),
+        ],
     )
 
-    processes_meta = [
+    # Process 3: Customer Onboarding & KYC Compliance (Intraday 3-hour SLA)
+    net_3 = _create_linear_rework_net(
+        place_specs=[
+            ("p1", "Registration Started", "p1 (Start)"),
+            ("p2", "Customer Registered", "p2 (Registered)"),
+            ("p3", "ID Documents Checked", "p3 (Docs Checked)"),
+            ("p4", "PEP & Sanctions Cleared", "p4 (Sanctions OK)"),
+            ("p5", "Compliance Signed Off", "p5 (Compliance OK)"),
+            ("p6", "Contract Countersigned", "p6 (Contract OK)"),
+            ("p7", "Account Activated", "p7 (Active)"),
+        ],
+        trans_specs=[
+            ("t1", "Register Customer", "Register", "Onboarding Portal", 15),
+            ("t2", "Check ID Documents", "Check ID", "Document AI", 30),
+            ("t3", "Sanctions & PEP Check", "Sanctions Check", "Compliance Screening", 35),
+            ("t4", "Compliance Sign-Off", "Compliance Sign", "AML Officer", 35),
+            ("t5", "Countersign Contract", "Sign Contract", "Legal Desk", 25),
+            ("t6", "Activate Account", "Activate", "Core Platform", 20),
+            ("t7", "Re-check ID Docs", "Re-check ID", "Document AI", 25),
+        ],
+    )
+
+    return [
         {
             "process_id": "PROC-001",
-            "name": "Order-to-Cash & Credit Approval Process",
-            "created_date": "2026-10-28",
-            "description": "High-volume order intake, identity verification, credit risk scoring, manager approval, and disbursement.",
-            "log_file": "order_to_cash_events.xes",
-            "status": "Active",
-            "case_sla_limit_min": 200,
-            "detection_methods": [
-                "Petri-Net Conformance Checking",
-                "SLA & Timestamp Monitoring",
-            ],
-        },
-        {
-            "process_id": "PROC-002",
-            "name": "Purchase-to-Pay & Invoice Approval",
-            "created_date": "2026-10-30",
-            "description": "Corporate procurement workflow from purchase requisition and vendor verification to goods receipt and payment release.",
-            "log_file": "purchase_to_pay_stream.xes",
-            "status": "Active",
-            "case_sla_limit_min": 200,
-            "detection_methods": [
-                "Petri-Net Conformance Checking",
-                "SLA & Timestamp Monitoring",
-            ],
-        },
-        {
-            "process_id": "PROC-003",
-            "name": "Customer Onboarding & KYC Compliance",
-            "created_date": "2026-11-01",
-            "description": "End-to-end onboarding of commercial clients with identity document checks, sanctions screening, and compliance sign-off.",
-            "log_file": "kyc_onboarding_stream.xes",
+            "case_prefix": "CRD",
+            "name": "Express Credit Application & Loan Disbursement",
+            "log_file": "express_credit_disbursement.xes",
+            "created_date": "2025-05-12 06:00",
             "status": "Active",
             "case_sla_limit_min": 180,
             "detection_methods": [
                 "Petri-Net Conformance Checking",
                 "SLA & Timestamp Monitoring",
             ],
-        },
-    ]
-
-    return nets, processes_meta
-
-
-def _fmt_ts(dt: datetime) -> str:
-    return dt.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _generate_Master_Raw_Cases(nets: Dict[str, WorkflowNet]) -> List[dict]:
-    """
-    Generates realistic, domain-consistent cases across the 3 processes:
-    - PROC-001: 48 cases (CASE-101 .. CASE-148)
-    - PROC-002: 28 cases (P2P-201 .. P2P-228)
-    - PROC-003: 16 cases (KYC-301 .. KYC-316)
-    Each event has (activity_name, timestamp_str, unit_name, duration_min).
-    Timestamps are distributed across the 4 update windows (T1 <= 09:00, T2 <= 11:00, T3 <= 13:30, T4 <= 16:00)
-    so cases realistically arrive and progress over time.
-    """
-    all_raw: List[dict] = []
-
-    process_configs = [
-        {
-            "process_id": "PROC-001",
-            "prefix": "CASE",
-            "start_num": 101,
-            "total_cases": 48,
-            "batch_Counts": [16, 12, 11, 9],  # T1: 16, T2: +12 (28), T3: +11 (39), T4: +9 (48)
-            "units": {
-                "t1": "Intake-Portal",
-                "t2": "ID-Verification-Team",
-                "t3": "Credit-Risk-Engine",
-                "t4": "Credit-Approval-Board",
-                "t5": "Offer-Desk",
-                "t6": "Settlement-Unit",
-                "t7": "Document-Clearing",
-            },
+            "wf_net_obj": net_1,
         },
         {
             "process_id": "PROC-002",
-            "prefix": "P2P",
-            "start_num": 201,
-            "total_cases": 28,
-            "batch_Counts": [9, 7, 6, 6],  # T1: 9, T2: +7 (16), T3: +6 (22), T4: +6 (28)
-            "units": {
-                "t1": "Requester-Dept",
-                "t2": "Vendor-Master-Desk",
-                "t3": "Finance-Controlling",
-                "t4": "Procurement-Buyer",
-                "t5": "Central-Warehouse",
-                "t6": "Accounts-Payable",
-                "t7": "Sourcing-Team",
-            },
+            "case_prefix": "INV",
+            "name": "Urgent Purchase Order & E-Invoice Payment",
+            "log_file": "urgent_po_einvoice_payment.xes",
+            "created_date": "2025-05-12 06:00",
+            "status": "Active",
+            "case_sla_limit_min": 180,
+            "detection_methods": [
+                "Petri-Net Conformance Checking",
+                "SLA & Timestamp Monitoring",
+            ],
+            "wf_net_obj": net_2,
         },
         {
             "process_id": "PROC-003",
-            "prefix": "KYC",
-            "start_num": 301,
-            "total_cases": 16,
-            "batch_Counts": [5, 4, 4, 3],  # T1: 5, T2: +4 (9), T3: +4 (13), T4: +3 (16)
-            "units": {
-                "t1": "Client-Gateway",
-                "t2": "KYC-Doc-Specialists",
-                "t3": "AML-Screening-System",
-                "t4": "Compliance-Officer",
-                "t5": "Legal-Contracting",
-                "t6": "Core-Banking-Ops",
-                "t7": "KYC-Support-Desk",
-            },
+            "case_prefix": "KYC",
+            "name": "Digital Bank Account Opening & KYC Check",
+            "log_file": "digital_account_kyc_stream.csv",
+            "created_date": "2025-05-12 06:00",
+            "status": "Active",
+            "case_sla_limit_min": 180,
+            "detection_methods": [
+                "Petri-Net Conformance Checking",
+                "SLA & Timestamp Monitoring",
+            ],
+            "wf_net_obj": net_3,
         },
     ]
 
-    # Batch start base times on 2026-11-03:
-    # Batch 0: arrives between 07:35 and 08:52 (<= 09:00 T1)
-    # Batch 1: arrives between 09:06 and 10:48 (<= 11:00 T2)
-    # Batch 2: arrives between 11:06 and 13:18 (<= 13:30 T3)
-    # Batch 3: arrives between 13:35 and 15:42 (<= 16:00 T4)
-    batch_windows = [
-        (datetime(2026, 11, 3, 7, 35, 0), 75),
-        (datetime(2026, 11, 3, 9, 6, 0), 98),
-        (datetime(2026, 11, 3, 11, 6, 0), 125),
-        (datetime(2026, 11, 3, 13, 35, 0), 115),
-    ]
 
-    # Archetypes cycle to give a realistic mix of Conformance & SLA outcomes:
-    # 0: Conformant + On-Time SLA (Clean Green in both) - full 6 steps
-    # 1: Conformant + On-Time SLA (In progress: 4 steps)
-    # 2: Conformant + Minor SLA Delay on t3 (Green Conformance, Orange SLA)
-    # 3: Minor Conformance (Rework loop t1->t2->t7->t2->t3->t4) + On-Time SLA
-    # 4: Minor Conformance (Repeated step t1->t2->t2->t3->t4->t5) + Minor SLA Delay
-    # 5: Severe Conformance (Skips t4 Approval: t1->t2->t3->t5->t6) + On-Time SLA
-    # 6: Conformant + Severe SLA Breach on t3 & t4 (Green Conformance, Red SLA)
-    # 7: Conformant + On-Time SLA (In progress: 3 steps)
-    # 8: Minor Conformance (Repeated t1->t1->t2->t3) + On-Time SLA
-    # 9: Severe Conformance (Skips t3 & t4: t1->t2->t5->t6) + Severe SLA Breach (Red in both)
-    archetypes = [
-        "CLEAN_FULL",
-        "CLEAN_4",
-        "CLEAN_SLA_ORANGE",
-        "REWORK_LOOP",
-        "REPEATED_VERIFY",
-        "SKIP_T4_APPROVAL",
-        "CLEAN_SLA_RED",
-        "CLEAN_3",
-        "REPEATED_START",
-        "SKIP_T3_T4_SLA_RED",
-    ]
-
-    for pconf in process_configs:
-        pid = pconf["process_id"]
-        net = nets[pid]
-        trans = net.transitions
-        units = pconf["units"]
-        case_idx = 0
-
-        for b_idx, b_count in enumerate(pconf["batch_Counts"]):
-            win_start, win_span_min = batch_windows[b_idx]
-            for i in range(b_count):
-                cid = f"{pconf['prefix']}-{pconf['start_num'] + case_idx}"
-                arch = archetypes[(case_idx + b_idx * 2) % len(archetypes)]
-
-                # Spread arrival times evenly within the batch window
-                offset_min = int((i / max(1, b_count)) * win_span_min) + (case_idx % 4)
-                start_dt = win_start + timedelta(minutes=offset_min, seconds=(case_idx * 13) % 50)
-
-                # Build planned transition sequence & step durations (minutes)
-                if arch == "CLEAN_FULL":
-                    seq = [
-                        ("t1", 10),
-                        ("t2", 22),
-                        ("t3", 32),
-                        ("t4", 34),
-                        ("t5", 18),
-                        ("t6", 28),
-                    ]
-                elif arch == "CLEAN_4":
-                    seq = [
-                        ("t1", 11),
-                        ("t2", 24),
-                        ("t3", 35),
-                        ("t4", 36),
-                    ]
-                elif arch == "CLEAN_3":
-                    seq = [
-                        ("t1", 12),
-                        ("t2", 21),
-                        ("t3", 30),
-                    ]
-                elif arch == "CLEAN_SLA_ORANGE":
-                    # Conformance is 100% valid, but t3 exceeds its step deadline moderately (+16m over limit)
-                    t3_limit = trans["t3"].sla_limit_min
-                    seq = [
-                        ("t1", 12),
-                        ("t2", 25),
-                        ("t3", t3_limit + 16),
-                        ("t4", 38),
-                        ("t5", 20),
-                    ]
-                elif arch == "CLEAN_SLA_RED":
-                    # Conformance is 100% valid, but t3 and t4 severely exceed SLA deadlines
-                    t3_limit = trans["t3"].sla_limit_min
-                    t4_limit = trans["t4"].sla_limit_min
-                    seq = [
-                        ("t1", 14),
-                        ("t2", 28),
-                        ("t3", int(t3_limit * 1.85) + 15),
-                        ("t4", int(t4_limit * 1.75) + 12),
-                        ("t5", 22),
-                    ]
-                elif arch == "REWORK_LOOP":
-                    # Executes rework loop t7 (p3 -> p2) and then re-verifies t2 (p2 -> p3)
-                    seq = [
-                        ("t1", 11),
-                        ("t2", 24),
-                        ("t7", 26),
-                        ("t2", 19),
-                        ("t3", 33),
-                        ("t4", 35),
-                    ]
-                elif arch == "REPEATED_VERIFY":
-                    # Repeats t2 (Verify) twice and has a minor SLA overrun on the second t2
-                    t2_limit = trans["t2"].sla_limit_min
-                    seq = [
-                        ("t1", 12),
-                        ("t2", 25),
-                        ("t2", t2_limit + 12),
-                        ("t3", 34),
-                        ("t4", 36),
-                    ]
-                elif arch == "REPEATED_START":
-                    # Duplicate initial event t1
-                    seq = [
-                        ("t1", 10),
-                        ("t1", 8),
-                        ("t2", 23),
-                        ("t3", 31),
-                    ]
-                elif arch == "SKIP_T4_APPROVAL":
-                    # Skips mandatory approval t4 (goes from t3 directly to t5 -> t6)
-                    seq = [
-                        ("t1", 11),
-                        ("t2", 22),
-                        ("t3", 33),
-                        ("t5", 19),
-                        ("t6", 27),
-                    ]
-                else:  # SKIP_T3_T4_SLA_RED
-                    # Skips both t3 and t4 AND has a severe SLA delay on t5
-                    t5_limit = trans["t5"].sla_limit_min
-                    seq = [
-                        ("t1", 13),
-                        ("t2", 27),
-                        ("t5", int(t5_limit * 2.2) + 15),
-                        ("t6", 35),
-                    ]
-
-                # Generate chronological timestamps
-                # Ensure the first 2-3 events happen relatively quickly so that even in the arrival batch
-                # deviations / progress are visible, while later steps stretch across subsequent time snapshots
-                cur_dt = start_dt
-                events_list = []
-                for step_i, (tid, dur_min) in enumerate(seq):
-                    if step_i == 0:
-                        ev_dt = start_dt
-                    else:
-                        # Pace progression so early steps occur within the arrival window and later steps cross snapshots
-                        time_step = dur_min if step_i >= 3 else min(dur_min, 16)
-                        cur_dt = cur_dt + timedelta(minutes=time_step, seconds=15)
-                        ev_dt = cur_dt
-
-                    # Cap timestamps at 15:58 so all planned events for latest snapshot are <= 16:00:00
-                    latest_cap = datetime(2026, 11, 3, 15, 58, 0)
-                    if ev_dt > latest_cap:
-                        ev_dt = latest_cap - timedelta(minutes=(len(seq) - step_i) * 2)
-
-                    events_list.append({
-                        "transition_id": tid,
-                        "activity": trans[tid].name,
-                        "timestamp": _fmt_ts(ev_dt),
-                        "unit": units[tid],
-                        "duration_min": dur_min,
-                        "sla_limit_min": trans[tid].sla_limit_min,
-                    })
-
-                all_raw.append({
-                    "case_id": cid,
-                    "process_id": pid,
-                    "arrival_batch": f"T{b_idx + 1}",
-                    "events": events_list,
-                })
-                case_idx += 1
-
-    return all_raw
+TIME_SNAPSHOTS: List[dict] = [
+    {
+        "id": "T1",
+        "short_label": "09:00",
+        "timestamp": "2025-05-12 09:00:00",
+        "prev_timestamp": "2025-05-12 06:00:00",
+    },
+    {
+        "id": "T2",
+        "short_label": "11:00",
+        "timestamp": "2025-05-12 11:00:00",
+        "prev_timestamp": "2025-05-12 09:00:00",
+    },
+    {
+        "id": "T3",
+        "short_label": "13:30",
+        "timestamp": "2025-05-12 13:30:00",
+        "prev_timestamp": "2025-05-12 11:00:00",
+    },
+    {
+        "id": "T4",
+        "short_label": "16:00 (Latest)",
+        "timestamp": "2025-05-12 16:00:00",
+        "prev_timestamp": "2025-05-12 13:30:00",
+    },
+]
 
 
 class StreamOrchestrator:
-    def __init__(self) -> None:
-        self.nets, self.processes = _build_process_definitions()
-        self.raw_cases = _generate_Master_Raw_Cases(self.nets)
-        self.selected_time_id: str = "T4"
+    """
+    Manages the multi-process case stream across the 4 intraday time snapshots.
+    """
 
-        # Notification Settings (Yellow and/or Red cases)
+    def __init__(self) -> None:
+        self.process_defs: List[dict] = _build_process_definitions()
+        self.process_map: Dict[str, dict] = {
+            p["process_id"]: p for p in self.process_defs
+        }
         self.settings: dict = {
             "notify_yellow": False,
             "notify_red": True,
         }
+        self.selected_time_id: str = "T4"
+        self.master_raw_cases: List[dict] = self._generate_master_raw_cases()
+
+    def _generate_master_raw_cases(self) -> List[dict]:
+        """
+        Generates 100 cases per process (300 total across the day) distributed across
+        the 4 stream batches (T1..T4). Every event timestamp advances by its true
+        step duration (`dur_min`) from `arrival_timestamp`, fitting a realistic
+        1 to 3.5 hour case execution horizon.
+        """
+        batch_configs = [
+            # (batch_id, window_start_str, cutoff_str, count_per_process)
+            ("T1", "2025-05-12 06:15:00", "2025-05-12 09:00:00", 25),
+            ("T2", "2025-05-12 09:02:00", "2025-05-12 11:00:00", 25),
+            ("T3", "2025-05-12 11:02:00", "2025-05-12 13:30:00", 25),
+            ("T4", "2025-05-12 13:32:00", "2025-05-12 16:00:00", 25),
+        ]
+
+        # 25 archetypes per batch per process covering all Conformance & SLA combinations
+        batch_archetypes = [
+            "CLEAN_GREEN", "CLEAN_GREEN", "CLEAN_GREEN", "CLEAN_GREEN", "CLEAN_GREEN",
+            "CLEAN_GREEN", "CLEAN_GREEN", "CLEAN_GREEN", "CLEAN_GREEN", "CLEAN_GREEN",
+            "CLEAN_GREEN", "CLEAN_GREEN",
+            "CLEAN_SLA_ORANGE", "CLEAN_SLA_ORANGE", "CLEAN_SLA_ORANGE",
+            "CLEAN_SLA_RED", "CLEAN_SLA_RED",
+            "REWORK_T2", "REWORK_T2",
+            "REPEAT_T2", "REPEAT_T2",
+            "SKIP_T3",
+            "SKIP_T4_APPROVAL", "SKIP_T4_APPROVAL",
+            "SKIP_AND_SLA_RED",
+        ]
+
+        raw_cases: List[dict] = []
+
+        for p_idx, pdef in enumerate(self.process_defs):
+            wf_net: WorkflowNet = pdef["wf_net_obj"]
+            t_map = wf_net.transitions
+            prefix = pdef["case_prefix"]
+            case_counter = 1
+
+            for b_idx, (batch_id, win_start_str, cutoff_str, count) in enumerate(batch_configs):
+                win_start_dt = datetime.strptime(win_start_str, "%Y-%m-%d %H:%M:%S")
+                cutoff_dt = datetime.strptime(cutoff_str, "%Y-%m-%d %H:%M:%S")
+                window_minutes = int((cutoff_dt - win_start_dt).total_seconds() // 60)
+
+                for i in range(count):
+                    case_id = f"{prefix}-{1000 + case_counter}"
+                    case_counter += 1
+                    archetype = batch_archetypes[i % len(batch_archetypes)]
+
+                    # Build step sequence (transition_id, duration_min)
+                    seq: List[tuple] = []
+
+                    if archetype == "CLEAN_GREEN":
+                        # Full 6-step valid trace (~95-110 min total, well within 180m SLA).
+                        # Depending on arrival time within the batch, some finish inside the
+                        # current snapshot while later arrivals are in flight (p2..p6) and
+                        # progress in subsequent snapshots.
+                        seq = [
+                            ("t1", 11 + (i % 4)),
+                            ("t2", 16 + (i % 5)),
+                            ("t3", 20 + (i % 5)),
+                            ("t4", 17 + (i % 4)),
+                            ("t5", 15 + (i % 4)),
+                            ("t6", 15 + (i % 4)),
+                        ]
+                        # For the last snapshot (T4), also keep a few green cases at 2..5 steps
+                        # so active in-flight positions p2..p6 are always populated at 16:00.
+                        if batch_id == "T4" and i < 8:
+                            target_len = 2 + (i % 4)  # 2, 3, 4, 5 steps
+                            seq = seq[:target_len]
+
+                    elif archetype == "CLEAN_SLA_ORANGE":
+                        # Valid conformance order, but t2 or t3 exceeds its step SLA moderately (36-44m vs 30-35m)
+                        seq = [
+                            ("t1", 12 + (i % 3)),
+                            ("t2", 38 + (i % 5)),
+                            ("t3", 22 + (i % 4)),
+                            ("t4", 18 + (i % 4)),
+                        ]
+                        if i % 2 == 1:
+                            seq.append(("t5", 16 + (i % 3)))
+
+                    elif archetype == "CLEAN_SLA_RED":
+                        # Valid conformance order, but severe bottleneck on t2 & t3
+                        # (t2 takes 56-62m vs 30m SLA -> severe step SLA breach;
+                        #  5-step total reaches ~190-200m vs 180m Case SLA)
+                        seq = [
+                            ("t1", 14),
+                            ("t2", 58 + (i % 5)),
+                            ("t3", 68 + (i % 6)),
+                            ("t4", 26),
+                            ("t5", 22),
+                        ]
+
+                    elif archetype == "REWORK_T2":
+                        # Minor conformance deviation: executes rework loop t7 after t2
+                        seq = [
+                            ("t1", 11),
+                            ("t2", 18),
+                            ("t7", 15 + (i % 4)),
+                            ("t2", 16),
+                            ("t3", 21),
+                        ]
+                        if i % 2 == 0:
+                            seq.append(("t4", 18))
+
+                    elif archetype == "REPEAT_T2":
+                        # Minor conformance deviation: duplicate/repeated t2 event without rework transition
+                        seq = [
+                            ("t1", 12),
+                            ("t2", 17),
+                            ("t2", 14 + (i % 4)),
+                            ("t3", 20),
+                        ]
+                        if i % 2 == 1:
+                            seq.append(("t4", 18))
+
+                    elif archetype == "SKIP_T3":
+                        # Severe conformance deviation: skips mandatory risk/budget/sanctions check (t3)
+                        seq = [
+                            ("t1", 12),
+                            ("t2", 18),
+                            ("t4", 19),
+                            ("t5", 16),
+                        ]
+
+                    elif archetype == "SKIP_T4_APPROVAL":
+                        # Severe conformance deviation: skips mandatory approval/PO/compliance sign-off (t4)
+                        seq = [
+                            ("t1", 11),
+                            ("t2", 17),
+                            ("t3", 21),
+                            ("t5", 16),
+                        ]
+                        if i % 2 == 0:
+                            seq.append(("t6", 15))
+
+                    elif archetype == "SKIP_AND_SLA_RED":
+                        # Both Severe Conformance (skips t4) AND Severe SLA Breach (t3 takes 72m)
+                        seq = [
+                            ("t1", 14),
+                            ("t2", 24),
+                            ("t3", 72),
+                            ("t5", 22),
+                        ]
+
+                    # Compute arrival timestamp (`start_dt`) within the batch window:
+                    # - Deviating archetypes (i >= 12) arrive in the first half of the batch window
+                    #   so their deviating step is already visible within the batch's own snapshot.
+                    # - Clean green archetypes (i < 12) are spread across the entire batch window
+                    #   so earlier ones finish within the snapshot and later ones are in-flight (p2..p6)
+                    #   at the current snapshot and advance in the next snapshot.
+                    if i >= 12:
+                        # Ensure all steps up to the key deviating step finish before cutoff_dt
+                        req_min = sum(d for _, d in seq[:4]) + 4
+                        max_offset = max(4, window_minutes - req_min)
+                        offset_min = ((i - 12) * max(1, max_offset // 13) + p_idx * 2) % max(1, max_offset)
+                    else:
+                        # Spread clean cases across the window, keeping at least 18 min before cutoff_dt
+                        # so t1 always finishes before cutoff_dt
+                        max_offset = max(6, window_minutes - 18)
+                        offset_min = (i * (max_offset // 12) + p_idx * 3 + b_idx) % max_offset
+
+                    start_dt = win_start_dt + timedelta(minutes=offset_min, seconds=(i * 13 + p_idx * 17) % 50)
+                    cur_dt = start_dt
+
+                    events: List[dict] = []
+                    for tid, dur_min in seq:
+                        tr = t_map[tid]
+                        cur_dt = cur_dt + timedelta(minutes=dur_min)
+                        events.append(
+                            {
+                                "transition_id": tid,
+                                "activity": tr.label,
+                                "unit": tr.unit,
+                                "duration_min": dur_min,
+                                "sla_limit_min": tr.sla_limit_min,
+                                "timestamp": cur_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            }
+                        )
+
+                    raw_cases.append(
+                        {
+                            "case_id": case_id,
+                            "process_id": pdef["process_id"],
+                            "process_name": pdef["name"],
+                            "case_sla_limit_min": pdef["case_sla_limit_min"],
+                            "arrival_batch": batch_id,
+                            "arrival_timestamp": start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "events": events,
+                        }
+                    )
+
+        return raw_cases
 
     def set_time_snapshot(self, time_id: str) -> dict:
-        valid_ids = {t["id"] for t in TIME_SNAPSHOTS}
+        valid_ids = {s["id"] for s in TIME_SNAPSHOTS}
         if time_id in valid_ids:
             self.selected_time_id = time_id
         return self.get_full_state()
@@ -439,322 +429,347 @@ class StreamOrchestrator:
         self.settings["notify_red"] = bool(notify_red)
         return self.get_full_state()
 
-    def get_full_state(self, time_id: str | None = None) -> dict:
-        if time_id:
-            valid_ids = {t["id"] for t in TIME_SNAPSHOTS}
-            if time_id in valid_ids:
-                self.selected_time_id = time_id
+    def _evaluate_case_at_snapshot(
+        self,
+        rc: dict,
+        cutoff_ts: str,
+        prev_cutoff_ts: str,
+    ) -> Optional[dict]:
+        """
+        Filters a case's events up to `cutoff_ts` and evaluates both:
+        1) Petri-Net Conformance Checking
+        2) SLA & Timestamp Monitoring
+        """
+        visible_raw_events = [
+            ev for ev in rc["events"] if ev["timestamp"] <= cutoff_ts
+        ]
+        if not visible_raw_events:
+            return None
 
-        active_snap = next(
-            (t for t in TIME_SNAPSHOTS if t["id"] == self.selected_time_id),
-            TIME_SNAPSHOTS[-1],
-        )
-        cutoff_ts = active_snap["timestamp"]
-        prev_cutoff_ts = active_snap["prev_timestamp"]
+        arrival_ts = rc["arrival_timestamp"]
+        last_ts = visible_raw_events[-1]["timestamp"]
+        is_from_last_update = prev_cutoff_ts < arrival_ts <= cutoff_ts
 
-        # Create fresh aligners per process for the current time snapshot evaluation
-        aligners: Dict[str, IncrementalPrefixAligner] = {
-            pid: IncrementalPrefixAligner(net) for pid, net in self.nets.items()
-        }
-        proc_map = {p["process_id"]: p for p in self.processes}
+        pdef = self.process_map[rc["process_id"]]
+        wf_net: WorkflowNet = pdef["wf_net_obj"]
+        tracker = OnlineAlignmentTracker(wf_net)
 
-        # Track per-process transition counts (how many cases had each event up to cutoff_ts)
-        transition_case_counts: Dict[str, Dict[str, int]] = {
-            pid: {tid: 0 for tid in net.transitions}
-            for pid, net in self.nets.items()
-        }
-        place_case_counts: Dict[str, Dict[str, int]] = {
-            pid: {pl_id: 0 for pl_id in net.places}
-            for pid, net in self.nets.items()
-        }
+        evaluated_events: List[dict] = []
+        prev_moves_len = 0
+        cumulative_min = 0
 
-        evaluated_cases: List[dict] = []
+        has_severe_conf = False
+        has_minor_conf = False
+        has_severe_sla = False
+        has_minor_sla = False
 
-        for rc in self.raw_cases:
-            # Filter events that have occurred up to cutoff_ts
-            visible_events = [
-                ev for ev in rc["events"] if ev["timestamp"] <= cutoff_ts
+        for idx, ev in enumerate(visible_raw_events):
+            act = ev["activity"]
+            dur = ev["duration_min"]
+            limit = ev["sla_limit_min"]
+            cumulative_min += dur
+
+            res = tracker.ingest_event(act)
+            new_moves = res["alignment_moves"][prev_moves_len:]
+            prev_moves_len = len(res["alignment_moves"])
+
+            # 1. Conformance evaluation for this event
+            skipped_models = [
+                m for m in new_moves if m["move_type"] == "MODEL_VISIBLE"
             ]
-            if not visible_events:
-                continue
+            log_only_moves = [
+                m for m in new_moves if m["move_type"] == "LOG_ONLY"
+            ]
+            rework_moves = [
+                m for m in new_moves if m["move_type"] == "REWORK"
+            ]
 
-            cid = rc["case_id"]
-            pid = rc["process_id"]
-            p_meta = proc_map[pid]
-            wf_net = self.nets[pid]
-            aligner = aligners[pid]
+            is_dev = False
+            dev_type = "None"
+            dev_severity = "GREEN"
+            dev_explanation = "Step executed in valid Petri net order."
 
-            first_ts = visible_events[0]["timestamp"]
-            last_ts = visible_events[-1]["timestamp"]
-            is_from_last_update = prev_cutoff_ts < first_ts <= cutoff_ts
+            if skipped_models:
+                is_dev = True
+                has_severe_conf = True
+                dev_severity = "RED"
+                skipped_names = ", ".join(
+                    f"'{m['transition_name']}'" for m in skipped_models
+                )
+                dev_type = f"Skipped Mandatory Step ({skipped_names})"
+                dev_explanation = (
+                    f"Severe Deviation: Mandatory transition {skipped_names} was skipped "
+                    f"before executing '{act}'."
+                )
+            elif log_only_moves:
+                is_dev = True
+                has_minor_conf = True
+                dev_severity = "ORANGE"
+                dev_type = "Unexpected / Repeated Activity"
+                dev_explanation = (
+                    f"Minor Deviation: Activity '{act}' was repeated or executed out of sequence."
+                )
+            elif rework_moves:
+                is_dev = True
+                has_minor_conf = True
+                dev_severity = "ORANGE"
+                dev_type = "Rework Loop"
+                dev_explanation = (
+                    f"Minor Deviation: Case took rework loop '{act}' back to an earlier checkpoint."
+                )
 
-            detailed_events = []
-            prev_cost = 0.0
-            agg = None
-            prev_moves_len = 0
+            # 2. SLA & Timestamp evaluation for this event
+            overrun = max(0, dur - limit)
+            if dur <= limit:
+                sla_status = "GREEN"
+                sla_badge = "✓ ON TIME"
+                sla_expl = f"Completed in {dur} min (within step SLA limit of ≤ {limit} min)."
+            elif dur >= int(limit * 1.65):
+                sla_status = "RED"
+                has_severe_sla = True
+                sla_badge = f"🚨 +{overrun}m BREACH"
+                sla_expl = (
+                    f"Severe Step SLA Breach: Step took {dur} min vs. {limit} min limit "
+                    f"(+{overrun} min overdue)."
+                )
+            else:
+                sla_status = "ORANGE"
+                has_minor_sla = True
+                sla_badge = f"⚠ +{overrun}m DELAY"
+                sla_expl = (
+                    f"Minor Step Delay: Step took {dur} min vs. {limit} min limit "
+                    f"(+{overrun} min over target)."
+                )
 
-            has_skipped_mandatory = False
-            total_elapsed_min = 0
-            sla_orange_steps = 0
-            sla_red_steps = 0
-            executed_tids_in_case = set()
-
-            for idx, ev in enumerate(visible_events):
-                act_name = ev["activity"]
-                tid = ev["transition_id"]
-                executed_tids_in_case.add(tid)
-
-                agg = aligner.process_event(cid, act_name)
-                new_moves = agg.prefix_alignment[prev_moves_len:]
-                prev_moves_len = len(agg.prefix_alignment)
-
-                cost_delta = round(agg.alignment_cost - prev_cost, 4)
-                is_dev = cost_delta > 0
-
-                # Determine Conformance step explanation
-                dev_type = "Valid Step"
-                dev_severity = "GREEN"
-                dev_explanation = "Step executed in expected Petri net order."
-
-                if is_dev:
-                    skipped_in_step = [
-                        m.model_transition
-                        for m in new_moves
-                        if m.move_type == "MODEL_VISIBLE"
-                    ]
-                    rework_in_step = any(m.move_type == "REWORK" for m in new_moves)
-
-                    if skipped_in_step:
-                        has_skipped_mandatory = True
-                        dev_type = "Skipped Required Step"
-                        dev_severity = "RED"
-                        dev_explanation = (
-                            f"Event '{act_name}' was executed prematurely: mandatory step(s) "
-                            f"[{', '.join(skipped_in_step)}] were skipped!"
-                        )
-                    elif rework_in_step:
-                        dev_type = "Rework Loop Step"
-                        dev_severity = "ORANGE"
-                        dev_explanation = (
-                            f"Rework loop triggered via '{act_name}': case returned to "
-                            f"{', '.join(agg.current_marking)} for re-verification."
-                        )
-                    else:
-                        dev_type = "Repeated / Out-of-Turn Step"
-                        dev_severity = "ORANGE"
-                        dev_explanation = (
-                            f"Duplicate or out-of-order execution of '{act_name}' at position "
-                            f"[{', '.join(agg.current_marking)}]."
-                        )
-
-                # Determine SLA & Timestamp step status
-                dur_min = ev["duration_min"]
-                limit_min = ev["sla_limit_min"]
-                total_elapsed_min += dur_min
-                overrun_min = max(0, dur_min - limit_min)
-
-                if dur_min <= limit_min:
-                    step_sla_status = "GREEN"
-                    step_sla_badge = f"✓ On Time ({dur_min}m / {limit_min}m)"
-                    step_sla_explanation = (
-                        f"Completed in {dur_min} min (Step Deadline: {limit_min} min) — Within SLA."
-                    )
-                elif dur_min <= int(limit_min * 1.55):
-                    step_sla_status = "ORANGE"
-                    sla_orange_steps += 1
-                    step_sla_badge = f"⚠ Deadline Exceeded (+{overrun_min}m)"
-                    step_sla_explanation = (
-                        f"Step deadline of {limit_min} min exceeded by +{overrun_min} min "
-                        f"(Actual duration: {dur_min} min)."
-                    )
-                else:
-                    step_sla_status = "RED"
-                    sla_red_steps += 1
-                    step_sla_badge = f"🚨 Severe SLA Breach (+{overrun_min}m)"
-                    step_sla_explanation = (
-                        f"Critical deadline breach: step took {dur_min} min vs. {limit_min} min deadline "
-                        f"(+{overrun_min} min overdue)."
-                    )
-
-                detailed_events.append({
+            evaluated_events.append(
+                {
                     "step": idx + 1,
-                    "transition_id": tid,
-                    "activity": act_name,
-                    "timestamp": ev["timestamp"],
+                    "transition_id": ev["transition_id"],
+                    "activity": act,
                     "unit": ev["unit"],
-                    "marking_after": list(agg.current_marking),
-                    # Conformance fields
+                    "timestamp": ev["timestamp"],
+                    "duration_min": dur,
+                    "sla_limit_min": limit,
+                    "cumulative_min": cumulative_min,
+                    "marking_after": res["current_marking"],
                     "is_deviation": is_dev,
-                    "deviation_severity": dev_severity,
                     "deviation_type": dev_type,
+                    "deviation_severity": dev_severity,
                     "deviation_explanation": dev_explanation,
-                    # SLA & Timestamp fields
-                    "duration_min": dur_min,
-                    "sla_limit_min": limit_min,
-                    "overrun_min": overrun_min,
-                    "cumulative_min": total_elapsed_min,
-                    "sla_status": step_sla_status,
-                    "sla_badge": step_sla_badge,
-                    "sla_explanation": step_sla_explanation,
-                })
-                prev_cost = agg.alignment_cost
+                    "sla_status": sla_status,
+                    "sla_badge": sla_badge,
+                    "sla_explanation": sla_expl,
+                }
+            )
 
-            # Increment transition case counts for this process
-            for tid in executed_tids_in_case:
-                if tid in transition_case_counts[pid]:
-                    transition_case_counts[pid][tid] += 1
+        case_sla_limit = rc["case_sla_limit_min"]
+        if cumulative_min > case_sla_limit:
+            has_severe_sla = True
 
-            current_marking = list(agg.current_marking) if agg else ["p1"]
-            for pl_id in current_marking:
-                if pl_id in place_case_counts[pid]:
-                    place_case_counts[pid][pl_id] += 1
+        # Overall Case Conformance Classification
+        conf_deviating_events = [
+            e for e in evaluated_events if e["is_deviation"]
+        ]
+        if has_severe_conf:
+            conf_cat = "RED"
+            conf_label = "Severe Deviations"
+            conf_reason = (
+                "Online Petri-Net Conformance Checking detected skipped mandatory process step(s) "
+                "in this trace."
+            )
+        elif has_minor_conf:
+            conf_cat = "ORANGE"
+            conf_label = "Minor Deviations"
+            conf_reason = (
+                "Online Petri-Net Conformance Checking detected rework or repeated activities, "
+                "but no mandatory steps were skipped."
+            )
+        else:
+            conf_cat = "GREEN"
+            conf_label = "No Deviations"
+            conf_reason = (
+                "All executed events strictly follow the reference Petri net in valid order."
+            )
 
-            place_names = [
-                f"{pl_id} ({wf_net.places[pl_id].name})"
-                for pl_id in current_marking
-                if pl_id in wf_net.places
-            ]
-            current_place_label = ", ".join(place_names)
-
-            # 1. Conformance Classification (derived from actual alignment at current time)
-            conf_deviating_events = [e for e in detailed_events if e["is_deviation"]]
-            if not conf_deviating_events:
-                conf_category = "GREEN"
-                conf_label = "No Deviations"
-                conf_reason = (
-                    "Petri-Net Conformance Check found 0 deviations. All executed steps follow the reference model."
-                )
-            elif has_skipped_mandatory:
-                conf_category = "RED"
-                conf_label = "Severe Deviations"
-                skipped_all = [
-                    m.model_transition
-                    for m in (agg.prefix_alignment if agg else [])
-                    if m.move_type == "MODEL_VISIBLE"
-                ]
-                conf_reason = (
-                    f"Petri-Net Conformance Check detected mandatory step skip(s): "
-                    f"[{', '.join(skipped_all)}]."
+        # Overall Case SLA Classification
+        sla_deviating_events = [
+            e for e in evaluated_events if e["sla_status"] in ("ORANGE", "RED")
+        ]
+        if has_severe_sla:
+            sla_cat = "RED"
+            sla_label = "Severe SLA Breach"
+            if cumulative_min > case_sla_limit:
+                sla_reason = (
+                    f"Total case elapsed time ({cumulative_min} min) exceeded the maximum process "
+                    f"SLA deadline of {case_sla_limit} min (+{cumulative_min - case_sla_limit} min overdue)."
                 )
             else:
-                conf_category = "ORANGE"
-                conf_label = "Minor Deviations"
-                conf_reason = (
-                    f"Petri-Net Conformance Check detected {len(conf_deviating_events)} minor deviation(s) "
-                    f"(repeated step or rework loop without skipping mandatory approvals)."
-                )
-
-            # 2. SLA & Timestamp Classification (derived from actual step durations & case SLA limit)
-            case_sla_limit = p_meta["case_sla_limit_min"]
-            sla_deviating_events = [
-                e for e in detailed_events if e["sla_status"] in ("ORANGE", "RED")
-            ]
-            if sla_red_steps > 0 or total_elapsed_min > case_sla_limit:
-                sla_category = "RED"
-                sla_label = "Severe SLA Breach"
                 sla_reason = (
-                    f"SLA & Timestamp Monitoring detected severe deadline breach ({len(sla_deviating_events)} "
-                    f"delayed step(s); total elapsed {total_elapsed_min} min vs. {case_sla_limit} min SLA limit)."
+                    f"Critical step deadline breach detected (total elapsed: {cumulative_min} min / "
+                    f"{case_sla_limit} min case SLA)."
                 )
-            elif sla_orange_steps > 0 or total_elapsed_min > int(case_sla_limit * 0.85):
-                sla_category = "ORANGE"
-                sla_label = "Minor Deadline Delay"
-                sla_reason = (
-                    f"SLA & Timestamp Monitoring detected minor step deadline overrun ({len(sla_deviating_events)} "
-                    f"delayed step(s); total elapsed {total_elapsed_min} min / {case_sla_limit} min SLA limit)."
-                )
-            else:
-                sla_category = "GREEN"
-                sla_label = "Within SLA Deadlines"
-                sla_reason = (
-                    f"All {len(detailed_events)} step(s) completed within allowed deadlines "
-                    f"(Total elapsed: {total_elapsed_min} min / {case_sla_limit} min case SLA limit)."
-                )
+        elif has_minor_sla:
+            sla_cat = "ORANGE"
+            sla_label = "Minor Deadline Delay"
+            sla_reason = (
+                f"One or more steps exceeded their target step deadline, while total case duration "
+                f"({cumulative_min} min / {case_sla_limit} min) remains within the overall SLA."
+            )
+        else:
+            sla_cat = "GREEN"
+            sla_label = "Within SLA"
+            sla_reason = (
+                f"All executed steps completed on time (total elapsed: {cumulative_min} min / "
+                f"{case_sla_limit} min case SLA)."
+            )
 
-            evaluated_cases.append({
-                "case_id": cid,
-                "process_id": pid,
-                "process_name": p_meta["name"],
-                "case_date": first_ts.split(" ")[0],
-                "arrival_timestamp": first_ts,
-                "last_timestamp": last_ts,
-                "arrival_batch": rc["arrival_batch"],
-                "is_from_last_update": is_from_last_update,
-                "current_marking": current_marking,
-                "current_place_label": current_place_label,
-                "events": detailed_events,
-                "alignment_moves": [m.to_dict() for m in agg.prefix_alignment] if agg else [],
-                # Conformance status
-                "conformance_category": conf_category,
-                "conformance_label": conf_label,
-                "conformance_reason": conf_reason,
-                "conformance_deviating_events": conf_deviating_events,
-                # SLA status
-                "sla_category": sla_category,
-                "sla_label": sla_label,
-                "sla_reason": sla_reason,
-                "sla_deviating_events": sla_deviating_events,
-                "total_elapsed_min": total_elapsed_min,
-                "case_sla_limit_min": case_sla_limit,
-                # Default aliases (Conformance)
-                "category": conf_category,
-                "category_label": conf_label,
-                "category_reason": conf_reason,
-                "deviating_events": conf_deviating_events,
-            })
-
-        # Build enriched process objects with their WF-net, transition counts, and case counts
-        enriched_processes = []
-        for p in self.processes:
-            pid = p["process_id"]
-            p_cases = [c for c in evaluated_cases if c["process_id"] == pid]
-            enriched_processes.append({
-                **p,
-                "wf_net": self.nets[pid].to_dict(),
-                "transition_case_counts": transition_case_counts[pid],
-                "place_case_counts": place_case_counts[pid],
-                "counts_by_method": {
-                    "CONFORMANCE": {
-                        "GREEN": sum(1 for c in p_cases if c["conformance_category"] == "GREEN"),
-                        "ORANGE": sum(1 for c in p_cases if c["conformance_category"] == "ORANGE"),
-                        "RED": sum(1 for c in p_cases if c["conformance_category"] == "RED"),
-                        "TOTAL": len(p_cases),
-                    },
-                    "SLA": {
-                        "GREEN": sum(1 for c in p_cases if c["sla_category"] == "GREEN"),
-                        "ORANGE": sum(1 for c in p_cases if c["sla_category"] == "ORANGE"),
-                        "RED": sum(1 for c in p_cases if c["sla_category"] == "RED"),
-                        "TOTAL": len(p_cases),
-                    },
-                },
-                "last_update_count": sum(1 for c in p_cases if c["is_from_last_update"]),
-            })
-
-        counts_by_method = {
-            "CONFORMANCE": {
-                "GREEN": sum(1 for c in evaluated_cases if c["conformance_category"] == "GREEN"),
-                "ORANGE": sum(1 for c in evaluated_cases if c["conformance_category"] == "ORANGE"),
-                "RED": sum(1 for c in evaluated_cases if c["conformance_category"] == "RED"),
-                "TOTAL": len(evaluated_cases),
-            },
-            "SLA": {
-                "GREEN": sum(1 for c in evaluated_cases if c["sla_category"] == "GREEN"),
-                "ORANGE": sum(1 for c in evaluated_cases if c["sla_category"] == "ORANGE"),
-                "RED": sum(1 for c in evaluated_cases if c["sla_category"] == "RED"),
-                "TOTAL": len(evaluated_cases),
-            },
-        }
-
-        last_update_cases_count = sum(1 for c in evaluated_cases if c["is_from_last_update"])
+        final_metrics = tracker.compute_incremental_metrics()
+        current_marking = final_metrics["current_marking"]
+        place_labels = [
+            wf_net.places[pid].name if pid in wf_net.places else pid
+            for pid in current_marking
+        ]
 
         return {
-            "settings": self.settings,
-            "time_snapshots": TIME_SNAPSHOTS,
+            "case_id": rc["case_id"],
+            "process_id": rc["process_id"],
+            "process_name": rc["process_name"],
+            "arrival_batch": rc["arrival_batch"],
+            "is_from_last_update": is_from_last_update,
+            "arrival_timestamp": arrival_ts,
+            "last_timestamp": last_ts,
+            "conformance_category": conf_cat,
+            "conformance_label": conf_label,
+            "conformance_reason": conf_reason,
+            "conformance_deviating_events": conf_deviating_events,
+            "sla_category": sla_cat,
+            "sla_label": sla_label,
+            "sla_reason": sla_reason,
+            "sla_deviating_events": sla_deviating_events,
+            "total_elapsed_min": cumulative_min,
+            "case_sla_limit_min": case_sla_limit,
+            "current_marking": current_marking,
+            "current_place_label": (
+                f"{current_marking[0]} — {place_labels[0]}"
+                if current_marking
+                else "Unknown"
+            ),
+            "events": evaluated_events,
+            "alignment_moves": final_metrics["alignment_moves"],
+        }
+
+    def get_full_state(self) -> dict:
+        snap = next(
+            (s for s in TIME_SNAPSHOTS if s["id"] == self.selected_time_id),
+            TIME_SNAPSHOTS[-1],
+        )
+        cutoff_ts = snap["timestamp"]
+        prev_cutoff_ts = snap["prev_timestamp"]
+
+        active_cases: List[dict] = []
+        for rc in self.master_raw_cases:
+            evaluated = self._evaluate_case_at_snapshot(
+                rc, cutoff_ts, prev_cutoff_ts
+            )
+            if evaluated is not None:
+                active_cases.append(evaluated)
+
+        active_cases.sort(key=lambda c: c["last_timestamp"], reverse=True)
+
+        counts_by_method = {
+            "CONFORMANCE": {"GREEN": 0, "ORANGE": 0, "RED": 0},
+            "SLA": {"GREEN": 0, "ORANGE": 0, "RED": 0},
+        }
+        for c in active_cases:
+            counts_by_method["CONFORMANCE"][c["conformance_category"]] += 1
+            counts_by_method["SLA"][c["sla_category"]] += 1
+
+        processes_out: List[dict] = []
+        for pdef in self.process_defs:
+            pid = pdef["process_id"]
+            wf_net: WorkflowNet = pdef["wf_net_obj"]
+            p_cases = [c for c in active_cases if c["process_id"] == pid]
+
+            p_counts = {
+                "CONFORMANCE": {
+                    "GREEN": sum(
+                        1 for c in p_cases if c["conformance_category"] == "GREEN"
+                    ),
+                    "ORANGE": sum(
+                        1 for c in p_cases if c["conformance_category"] == "ORANGE"
+                    ),
+                    "RED": sum(
+                        1 for c in p_cases if c["conformance_category"] == "RED"
+                    ),
+                    "TOTAL": len(p_cases),
+                },
+                "SLA": {
+                    "GREEN": sum(
+                        1 for c in p_cases if c["sla_category"] == "GREEN"
+                    ),
+                    "ORANGE": sum(
+                        1 for c in p_cases if c["sla_category"] == "ORANGE"
+                    ),
+                    "RED": sum(
+                        1 for c in p_cases if c["sla_category"] == "RED"
+                    ),
+                    "TOTAL": len(p_cases),
+                },
+            }
+
+            # How many active cases executed each transition up to the selected snapshot
+            trans_case_counts: Dict[str, int] = {
+                tid: 0 for tid in wf_net.transitions
+            }
+            place_case_counts: Dict[str, int] = {
+                pl_id: 0 for pl_id in wf_net.places
+            }
+
+            for c in p_cases:
+                executed_tids = {
+                    ev["transition_id"]
+                    for ev in c["events"]
+                    if ev.get("transition_id")
+                }
+                for tid in executed_tids:
+                    if tid in trans_case_counts:
+                        trans_case_counts[tid] += 1
+                for pl_id in c["current_marking"]:
+                    if pl_id in place_case_counts:
+                        place_case_counts[pl_id] += 1
+
+            last_update_proc_count = sum(
+                1 for c in p_cases if c["is_from_last_update"]
+            )
+
+            processes_out.append(
+                {
+                    "process_id": pid,
+                    "name": pdef["name"],
+                    "log_file": pdef["log_file"],
+                    "created_date": pdef["created_date"],
+                    "status": pdef["status"],
+                    "case_sla_limit_min": pdef["case_sla_limit_min"],
+                    "detection_methods": pdef["detection_methods"],
+                    "counts_by_method": p_counts,
+                    "last_update_count": last_update_proc_count,
+                    "transition_case_counts": trans_case_counts,
+                    "place_case_counts": place_case_counts,
+                    "wf_net": wf_net.to_dict(),
+                }
+            )
+
+        last_update_cases = [
+            c for c in active_cases if c["is_from_last_update"]
+        ]
+
+        return {
             "selected_time_id": self.selected_time_id,
-            "active_snapshot": active_snap,
-            "last_update_count": last_update_cases_count,
-            "processes": enriched_processes,
-            "cases": evaluated_cases,
-            "counts": counts_by_method["CONFORMANCE"],
+            "active_snapshot": snap,
+            "time_snapshots": TIME_SNAPSHOTS,
             "counts_by_method": counts_by_method,
+            "last_update_count": len(last_update_cases),
+            "processes": processes_out,
+            "cases": active_cases,
+            "settings": self.settings,
         }
