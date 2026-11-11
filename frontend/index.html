@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Real-Time Streaming Events - Orchestration</title>
-  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/styles.css?v=6" />
 </head>
 <body>
 
@@ -41,14 +41,14 @@
   <main class="workspace-container">
 
     <div id="mainMenuContainer">
-      <!-- Current Time Snapshot Summary Bar -->
+      <!-- Last Update Summary Bar -->
       <div class="time-status-bar">
         <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
           <span class="badge badge-NEW" id="activeTimeBadge" style="font-size:12px; padding:4px 10px;">
             🕒 16:00 (Latest)
           </span>
-          <span style="font-size:13.5px; color:var(--text-primary); font-weight:600;" id="activeTimeDescription">
-            Showing live stream state across 3 processes.
+          <span style="font-size:14px; color:var(--text-primary); font-weight:800;" id="activeTimeDescription">
+            Last Update
           </span>
         </div>
         <div style="display:flex; align-items:center; gap:14px; font-size:13px; color:var(--text-secondary);">
@@ -68,89 +68,49 @@
         <div class="status-cards-grid">
           <!-- GREEN: No Deviations -->
           <button id="tile-GREEN" class="status-tile green" onclick="toggleCategoryField('GREEN')">
-            <div>
-              <div class="tile-header">
-                <span class="tile-title" style="color:var(--green-text);" id="tileTitle-GREEN">🟢 No Deviations</span>
-                <span class="tile-count" id="count-GREEN" style="color:var(--green-text);">0</span>
-              </div>
-              <p class="tile-desc" id="tileDesc-GREEN">
-                Running cases without any detected process deviations. All steps follow the process model in order.
-              </p>
+            <div class="tile-header">
+              <span class="tile-title" style="color:var(--green-text);" id="tileTitle-GREEN">🟢 No Deviations</span>
+              <span class="tile-count" id="count-GREEN" style="color:var(--green-text);">0</span>
             </div>
-            <span class="tile-cta" style="color:var(--green-text);">Click to show cases →</span>
           </button>
 
           <!-- ORANGE: Minor Deviations -->
           <button id="tile-ORANGE" class="status-tile orange" onclick="toggleCategoryField('ORANGE')">
-            <div>
-              <div class="tile-header">
-                <span class="tile-title" style="color:var(--orange-text);" id="tileTitle-ORANGE">🟡 Minor Deviations</span>
-                <span class="tile-count" id="count-ORANGE" style="color:var(--orange-text);">0</span>
-              </div>
-              <p class="tile-desc" id="tileDesc-ORANGE">
-                Cases where online conformance checking detected minor process deviations such as repeated or rework steps.
-              </p>
+            <div class="tile-header">
+              <span class="tile-title" style="color:var(--orange-text);" id="tileTitle-ORANGE">🟡 Minor Deviations</span>
+              <span class="tile-count" id="count-ORANGE" style="color:var(--orange-text);">0</span>
             </div>
-            <span class="tile-cta" style="color:var(--orange-text);">Click to show cases →</span>
           </button>
 
           <!-- RED: Severe Deviations -->
           <button id="tile-RED" class="status-tile red" onclick="toggleCategoryField('RED')">
-            <div>
-              <div class="tile-header">
-                <span class="tile-title" style="color:var(--red-text);" id="tileTitle-RED">🔴 Severe Deviations</span>
-                <span class="tile-count" id="count-RED" style="color:var(--red-text);">0</span>
-              </div>
-              <p class="tile-desc" id="tileDesc-RED">
-                Cases where online conformance checking detected critical deviations such as skipped mandatory approvals.
-              </p>
+            <div class="tile-header">
+              <span class="tile-title" style="color:var(--red-text);" id="tileTitle-RED">🔴 Severe Deviations</span>
+              <span class="tile-count" id="count-RED" style="color:var(--red-text);">0</span>
             </div>
-            <span class="tile-cta" style="color:var(--red-text);">Click to show cases →</span>
           </button>
         </div>
       </section>
 
       <!-- ===================================================================
-           LOWER MENU SECTION: 5 FIELDS INCLUDING "LAST UPDATE"
+           LOWER MENU SECTION: 4 FIELDS
            =================================================================== -->
       <section class="lower-menu-section" aria-label="Process Management & Settings">
         <div class="menu-fields-grid">
-          <button id="tile-view-last-update" class="menu-field-tile highlight-update-tile" onclick="toggleMenuField('view-last-update')">
-            <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
-              <span style="font-size:15.5px; font-weight:800; color:var(--indigo);">🆕 Last Update</span>
-              <span class="badge badge-NEW" id="menuTileLastUpdateBadge">0 New</span>
-            </div>
-            <div style="font-size:12.5px; color:var(--text-secondary);">
-              Inspect all cases that newly arrived in the currently selected time update.
-            </div>
-          </button>
-
           <button id="tile-view-process-overview" class="menu-field-tile" onclick="toggleMenuField('view-process-overview')">
-            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">📂 Process Overview</div>
-            <div style="font-size:12.5px; color:var(--text-secondary);">
-              View all 3 processes, event case counts on their Petri net, and associated cases.
-            </div>
+            <div style="font-size:16px; font-weight:800; color:var(--blue);">📂 Process Overview</div>
           </button>
 
           <button id="tile-view-case-overview" class="menu-field-tile" onclick="toggleMenuField('view-case-overview')">
-            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">📋 Case Overview</div>
-            <div style="font-size:12.5px; color:var(--text-secondary);">
-              Complete table of all cases across processes with Conformance &amp; SLA statuses.
-            </div>
+            <div style="font-size:16px; font-weight:800; color:var(--blue);">📋 Case Overview</div>
           </button>
 
           <button id="tile-view-create-process" class="menu-field-tile" onclick="toggleMenuField('view-create-process')">
-            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">➕ Create New Process</div>
-            <div style="font-size:12.5px; color:var(--text-secondary);">
-              Upload an event log and select the detection methods for a new process.
-            </div>
+            <div style="font-size:16px; font-weight:800; color:var(--blue);">➕ Create New Process</div>
           </button>
 
           <button id="tile-view-settings" class="menu-field-tile" onclick="toggleMenuField('view-settings')">
-            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">⚙️ Settings</div>
-            <div style="font-size:12.5px; color:var(--text-secondary);">
-              Configure notifications for cases with minor and/or severe deviations.
-            </div>
+            <div style="font-size:16px; font-weight:800; color:var(--blue);">⚙️ Settings</div>
           </button>
         </div>
       </section>
@@ -189,16 +149,17 @@
         <!-- Right: Petri Net + Current Case Position + Detection Method Switcher + Events -->
         <div id="traceInspectorPanel" class="panel" style="display:none;">
           <div class="panel-header">
-            <div>
+            <div style="flex:1; min-width:0;">
               <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                 <div class="panel-title" id="traceInspectorTitle">Case Details</div>
                 <span id="traceInspectorUpdateBadge"></span>
+                <span id="traceInspectorBadge" class="badge"></span>
               </div>
-              <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;" id="traceInspectorSubtitle"></div>
+              <div style="font-size:12.5px; color:var(--text-secondary); margin-top:4px;" id="traceInspectorSubtitle"></div>
             </div>
-            <div style="display:flex; align-items:center; gap:8px;">
-              <span id="traceInspectorBadge" class="badge"></span>
+            <div style="display:flex; align-items:center; gap:8px; flex-shrink:0; margin-left:auto;">
               <button class="btn" onclick="deselectCase()">✕ Deselect Case</button>
+              <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
             </div>
           </div>
 
@@ -253,7 +214,7 @@
         <div class="panel">
           <div class="panel-header">
             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-              <div class="panel-title" id="lastUpdateListTitle">🆕 Cases Added in Last Update</div>
+              <div class="panel-title" id="lastUpdateListTitle">Last Update</div>
               <span class="badge badge-NEW" id="lastUpdateCountBadge">0 New Cases</span>
             </div>
             <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
@@ -282,9 +243,6 @@
           <div class="panel-title">📂 Process Overview</div>
           <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
         </div>
-        <p style="font-size:13.5px; color:var(--text-secondary); margin-bottom:16px;">
-          Click on a process below to display its Petri net (with case counts per event when no case is selected) and the side list of its cases.
-        </p>
         <div id="processOverviewList">
           <!-- Populated dynamically -->
         </div>
@@ -298,9 +256,6 @@
                 <div class="panel-title" id="processSideListHeader">Process Cases</div>
                 <span class="badge badge-GREEN" id="processSideCasesCount">0 Cases</span>
               </div>
-              <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
-                Click a case to highlight its position on the Petri net (click again to deselect and return to overall process event counts).
-              </p>
               <div id="processSideCasesList" class="case-list-scroll">
                 <!-- Populated dynamically -->
               </div>
@@ -309,7 +264,7 @@
             <!-- Main Area: Process Petri Net (+ Selected Case Events if a case is clicked) -->
             <div class="panel" style="background:var(--bg-card); margin-bottom:0;">
               <div class="panel-header">
-                <div>
+                <div style="flex:1; min-width:0;">
                   <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
                     <div class="panel-title" id="processPetriTitle">Process Petri Net</div>
                     <span id="processPetriUpdateBadge" style="display:none;"></span>
@@ -318,11 +273,15 @@
                     Reference process model
                   </div>
                 </div>
-                <div style="display:flex; gap:8px;">
+                <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; flex-shrink:0; margin-left:auto;">
+                  <button type="button" class="btn btn-primary" id="updatePetriNetBtn">
+                    Update Petri Net
+                  </button>
                   <button class="btn" id="processDeselectCaseBtn" style="display:none;" onclick="toggleProcessSideCase(selectedProcessCaseId)">
                     ↺ Show Process Event Counts
                   </button>
                   <button class="btn" onclick="closeProcessDetail()">✕ Hide Petri Net</button>
+                  <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
                 </div>
               </div>
 
@@ -514,15 +473,12 @@
           <button type="button" class="btn btn-primary" onclick="saveNotificationSettings()">
             Save Settings
           </button>
-          <span id="settingsSavedBanner" style="display:none; font-size:13px; font-weight:700; color:var(--green-text);">
-            ✓ Notification settings saved.
-          </span>
         </div>
       </div>
     </section>
 
   </main>
 
-  <script src="/static/cockpit.js"></script>
+  <script src="/static/cockpit.js?v=7"></script>
 </body>
 </html>
