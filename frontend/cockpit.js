@@ -26,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
         el.classList &&
         (el.classList.contains("panel") ||
           el.classList.contains("app-header") ||
+          el.classList.contains("time-status-bar") ||
           el.classList.contains("status-tile") ||
           el.classList.contains("menu-field-tile"))
     );
@@ -35,10 +36,9 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-async function loadState(timeId = null) {
+async function loadState() {
   try {
-    const url = timeId ? `/api/state?time_id=${encodeURIComponent(timeId)}` : "/api/state";
-    const res = await fetch(url);
+    const res = await fetch("/api/state");
     appState = await res.json();
     populateProcessFilters();
     syncSettingsInputs();
@@ -173,21 +173,17 @@ function renderTimeSelectorAndBanner() {
   const snap = appState.active_snapshot;
   if (snap) {
     const badge = document.getElementById("activeTimeBadge");
-    const desc = document.getElementById("activeTimeDescription");
-    if (badge) badge.innerText = `🕒 ${snap.label}`;
-    if (desc) desc.innerText = snap.description;
+    if (badge) badge.innerText = `🕒 ${snap.short_label}`;
   }
 
   const totalEl = document.getElementById("headerTotalCasesCount");
   const lastUpdEl = document.getElementById("headerLastUpdateCount");
-  const menuBadgeEl = document.getElementById("menuTileLastUpdateBadge");
 
   const totalCases = (appState.cases || []).length;
   const lastUpdCount = appState.last_update_count || 0;
 
   if (totalEl) totalEl.innerText = totalCases;
   if (lastUpdEl) lastUpdEl.innerText = `+${lastUpdCount} Cases`;
-  if (menuBadgeEl) menuBadgeEl.innerText = `+${lastUpdCount} New`;
 }
 
 function syncSettingsInputs() {
@@ -213,13 +209,7 @@ async function saveNotificationSettings() {
     });
     appState = await res.json();
     syncSettingsInputs();
-    const banner = document.getElementById("settingsSavedBanner");
-    if (banner) {
-      banner.style.display = "inline";
-      setTimeout(() => {
-        banner.style.display = "none";
-      }, 2500);
-    }
+    deselectAll();
   } catch (err) {
     console.error("Failed to save notification settings:", err);
   }
@@ -238,24 +228,12 @@ function renderMainMenuCounts() {
 
   if (selectedDetectionMethod === "SLA") {
     document.getElementById("tileTitle-GREEN").innerText = "🟢 Within SLA Deadlines";
-    document.getElementById("tileDesc-GREEN").innerText =
-      "Running cases where all executed steps completed within their target SLA deadlines.";
     document.getElementById("tileTitle-ORANGE").innerText = "🟡 Minor Deadline Delay";
-    document.getElementById("tileDesc-ORANGE").innerText =
-      "Cases where SLA & Timestamp Monitoring detected a moderate step deadline overrun.";
     document.getElementById("tileTitle-RED").innerText = "🔴 Severe SLA Breach";
-    document.getElementById("tileDesc-RED").innerText =
-      "Cases where step deadlines or the overall case SLA time limit were critically exceeded.";
   } else {
     document.getElementById("tileTitle-GREEN").innerText = "🟢 No Deviations";
-    document.getElementById("tileDesc-GREEN").innerText =
-      "Running cases without any detected process deviations. All steps follow the Petri net in order.";
     document.getElementById("tileTitle-ORANGE").innerText = "🟡 Minor Deviations";
-    document.getElementById("tileDesc-ORANGE").innerText =
-      "Cases where online conformance checking detected minor deviations such as repeated or rework steps.";
     document.getElementById("tileTitle-RED").innerText = "🔴 Severe Deviations";
-    document.getElementById("tileDesc-RED").innerText =
-      "Cases where online conformance checking detected critical deviations such as skipped mandatory approvals.";
   }
 }
 
@@ -289,9 +267,8 @@ function toggleMenuField(viewId) {
   selectedLastUpdateCaseId = null;
 
   if (viewId === "view-process-overview") {
-    if (!selectedProcessId && appState?.processes?.length) {
-      selectedProcessId = appState.processes[0].process_id;
-    }
+    selectedProcessId = null;
+    selectedProcessCaseId = null;
     renderProcessOverview();
     renderProcessDetailPanel();
   } else if (viewId === "view-last-update") {
@@ -347,6 +324,7 @@ function inspectCaseFromOverview(caseId) {
   updateViewVisibility();
   renderCategoryCaseList();
   renderSelectedCaseInspector();
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 function updateViewVisibility() {
@@ -362,7 +340,6 @@ function updateViewVisibility() {
   });
 
   [
-    "view-last-update",
     "view-create-process",
     "view-process-overview",
     "view-case-overview",
@@ -597,7 +574,7 @@ function renderLastUpdateView() {
   document.getElementById("lastUpdateCountBadge").innerText = `${newCases.length} New Cases`;
   if (snap) {
     document.getElementById("lastUpdateSubtitle").innerText =
-      `Showing all ${newCases.length} cases that newly arrived in ${snap.label} (between ${snap.prev_timestamp.split(" ")[1]} and ${snap.timestamp.split(" ")[1]}). Click a case to inspect it.`;
+      `Showing all ${newCases.length} newly arrived cases in the selected update (${snap.prev_timestamp.split(" ")[1]} – ${snap.timestamp.split(" ")[1]}). Click a case to inspect it.`;
   }
 
   const listEl = document.getElementById("lastUpdateCasesList");
@@ -656,18 +633,19 @@ function renderLastUpdateView() {
 
   document.getElementById("lastUpdateTraceContent").innerHTML = `
     <div class="panel-header">
-      <div>
+      <div style="flex:1; min-width:0;">
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <div class="panel-title">${selectedCase.case_id}</div>
           ${getUpdateStatusBadgeHtml(selectedCase)}
+          <span class="badge badge-${st.category}">${st.label}</span>
         </div>
-        <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;">
+        <div style="font-size:12.5px; color:var(--text-secondary); margin-top:4px;">
           Process: ${selectedCase.process_name} • Arrived: ${selectedCase.arrival_timestamp} • Last Event: ${selectedCase.last_timestamp}
         </div>
       </div>
-      <div style="display:flex; align-items:center; gap:8px;">
-        <span class="badge badge-${st.category}">${st.label}</span>
+      <div style="display:flex; align-items:center; gap:8px; flex-shrink:0; margin-left:auto;">
         <button class="btn" onclick="toggleLastUpdateCase('${selectedCase.case_id}')">✕ Deselect Case</button>
+        <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
       </div>
     </div>
 
@@ -999,6 +977,12 @@ function toggleProcessDetail(processId) {
   selectedProcessCaseId = null;
   renderProcessOverview();
   renderProcessDetailPanel();
+  setTimeout(() => {
+    const detailWrap = document.getElementById("processDetailContainer");
+    if (detailWrap) {
+      detailWrap.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, 30);
 }
 
 function closeProcessDetail() {
@@ -1036,15 +1020,12 @@ function renderProcessOverview() {
            onclick="toggleProcessDetail('${p.process_id}')">
         <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:14px;">
           <div>
-            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px;">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
               <h3 style="font-size:16.5px; font-weight:800; color:var(--text-primary);">${p.name}</h3>
               <span class="badge badge-GREEN">${p.status}</span>
               <span class="badge badge-NEW">+${p.last_update_count || 0} in Last Update</span>
               <span style="font-size:12px; color:var(--text-secondary);">ID: ${p.process_id} • Created: ${p.created_date} • Log: ${p.log_file}</span>
             </div>
-            <p style="font-size:13px; color:var(--text-secondary); margin-bottom:10px;">
-              ${p.description}
-            </p>
             <div style="margin-bottom:10px;">
               <strong style="font-size:12px; color:var(--blue);">Active Detection Methods:</strong>
               <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:5px;">
@@ -1056,15 +1037,11 @@ function renderProcessOverview() {
                   .join("")}
               </div>
             </div>
-            <div style="display:flex; gap:14px; font-size:12.5px; color:var(--text-secondary); flex-wrap:wrap;">
-              <span>Active Cases at Stream Time: <strong style="color:var(--text-primary);">${counts.TOTAL}</strong></span>
-              <span>•</span>
-              <span style="color:var(--green-text); font-weight:700;">${counts.GREEN} Green</span>
-              <span style="color:var(--orange-text); font-weight:700;">${counts.ORANGE} Minor</span>
-              <span style="color:var(--red-text); font-weight:700;">${counts.RED} Severe</span>
-            </div>
-            <div style="margin-top:10px; font-size:12px; font-weight:800; color:var(--blue);">
-              ${isSelected ? "▼ Petri Net & Cases Open (Click to hide)" : "▶ Click process to display Petri Net (with event case counts) & Cases List"}
+            <div style="display:flex; align-items:center; gap:10px; font-size:12.5px; color:var(--text-secondary); flex-wrap:wrap;">
+              <span>Active Cases: <strong style="color:var(--text-primary);">${counts.TOTAL}</strong></span>
+              <span class="badge badge-GREEN">🟢 ${counts.GREEN} No Deviations</span>
+              <span class="badge badge-ORANGE">🟡 ${counts.ORANGE} Minor Deviations</span>
+              <span class="badge badge-RED">🔴 ${counts.RED} Severe Deviations</span>
             </div>
           </div>
 
@@ -1137,6 +1114,7 @@ function renderProcessDetailPanel() {
   const eventsWrap = document.getElementById("processSelectedCaseEventsWrap");
   const methodWrap = document.getElementById("processCaseMethodWrap");
   const deselectBtn = document.getElementById("processDeselectCaseBtn");
+  const updatePetriBtn = document.getElementById("updatePetriNetBtn");
   const updateBadge = document.getElementById("processPetriUpdateBadge");
 
   if (selectedCase) {
@@ -1147,6 +1125,7 @@ function renderProcessDetailPanel() {
         : "Petri-Net Conformance Checking";
 
     deselectBtn.style.display = "inline-block";
+    if (updatePetriBtn) updatePetriBtn.style.display = "none";
     updateBadge.style.display = "inline-block";
     updateBadge.innerHTML = getUpdateStatusBadgeHtml(selectedCase);
 
@@ -1181,16 +1160,15 @@ function renderProcessDetailPanel() {
     eventsWrap.style.display = "block";
   } else {
     deselectBtn.style.display = "none";
+    if (updatePetriBtn) updatePetriBtn.style.display = "inline-block";
     updateBadge.style.display = "none";
     methodWrap.style.display = "none";
     eventsWrap.style.display = "none";
 
     document.getElementById("processPetriTitle").innerText =
       `${proc.name} — Process Petri Net (Event Case Counts)`;
-    document.getElementById("processPetriSubtitle").innerText =
-      `Each transition box displays how many cases (out of ${procCases.length}) have executed that event up to the selected stream time. Select a case on the left to inspect its individual trace.`;
-    document.getElementById("processMarkingLabel").innerText =
-      `📊 Aggregated across ${procCases.length} active cases`;
+    document.getElementById("processPetriSubtitle").innerText = "";
+    document.getElementById("processMarkingLabel").innerText = "";
   }
 }
 
@@ -1216,9 +1194,9 @@ function renderCaseOverview() {
     if (c.is_from_last_update) newCnt++;
   });
 
-  document.getElementById("overviewCountGreen").innerText = `${greenCnt} Green`;
-  document.getElementById("overviewCountOrange").innerText = `${orangeCnt} Minor`;
-  document.getElementById("overviewCountRed").innerText = `${redCnt} Severe`;
+  document.getElementById("overviewCountGreen").innerText = `${greenCnt} No Deviations`;
+  document.getElementById("overviewCountOrange").innerText = `${orangeCnt} Minor Deviations`;
+  document.getElementById("overviewCountRed").innerText = `${redCnt} Severe Deviations`;
   document.getElementById("overviewCountNew").innerText = `${newCnt} From Last Update`;
 
   const tbody = document.getElementById("caseOverviewTableBody");
