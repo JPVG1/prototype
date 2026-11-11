@@ -1,4 +1,4 @@
-# Real-Time Streaming Events - Orchestration
+# Real-Time Streaming Events - Orchestration (Johannes Gaidetzka)
 
 ## 1. Install the Required Python Packages
 pip install -r requirements.txt
