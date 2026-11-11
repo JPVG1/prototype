@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Real-Time Streaming Events - Orchestration</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+  <!-- Header: Click title to return to Main Menu, plus Stream Time & Detection Method selectors -->
+  <header class="app-header">
+    <h1 onclick="deselectAll()" title="Click to return to Main Menu" style="cursor:pointer; user-select:none;">
+      Real-Time Streaming Events - Orchestration
+    </h1>
+
+    <div class="header-controls">
+      <!-- Time Snapshot Selector (Simulates arriving cases over time) -->
+      <div class="control-group" title="Select a stream timestamp to inspect arrived cases and their progress at that time">
+        <span class="control-label">🕒 Stream Time:</span>
+        <div class="segmented-group" id="timeSnapshotSelector">
+          <!-- Populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Global Detection Method Status Selector -->
+      <div class="control-group" title="Choose which detection method status is shown on cases">
+        <span class="control-label">🔍 Status Method:</span>
+        <div class="segmented-group" id="globalMethodSelector">
+          <button type="button" class="seg-btn active" data-method="CONFORMANCE" onclick="setDetectionMethod('CONFORMANCE')">
+            Petri-Net Conformance
+          </button>
+          <button type="button" class="seg-btn" data-method="SLA" onclick="setDetectionMethod('SLA')">
+            SLA &amp; Timestamp
+          </button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="workspace-container">
+
+    <div id="mainMenuContainer">
+      <!-- Current Time Snapshot Summary Bar -->
+      <div class="time-status-bar">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <span class="badge badge-NEW" id="activeTimeBadge" style="font-size:12px; padding:4px 10px;">
+            🕒 16:00 (Latest)
+          </span>
+          <span style="font-size:13.5px; color:var(--text-primary); font-weight:600;" id="activeTimeDescription">
+            Showing live stream state across 3 processes.
+          </span>
+        </div>
+        <div style="display:flex; align-items:center; gap:14px; font-size:13px; color:var(--text-secondary);">
+          <span>Active Cases: <strong id="headerTotalCasesCount" style="color:var(--text-primary);">0</strong></span>
+          <span>•</span>
+          <span>New in Last Update: <strong id="headerLastUpdateCount" style="color:var(--indigo);">0</strong></span>
+          <button type="button" class="btn" style="padding:4px 10px; font-size:12px;" onclick="toggleMenuField('view-last-update')">
+            View Last Update Cases →
+          </button>
+        </div>
+      </div>
+
+      <!-- ===================================================================
+           CENTERED & LARGE DEVIATION FIELDS
+           =================================================================== -->
+      <section class="deviation-hero-section" aria-label="Deviation Status Categories">
+        <div class="status-cards-grid">
+          <!-- GREEN: No Deviations -->
+          <button id="tile-GREEN" class="status-tile green" onclick="toggleCategoryField('GREEN')">
+            <div>
+              <div class="tile-header">
+                <span class="tile-title" style="color:var(--green-text);" id="tileTitle-GREEN">🟢 No Deviations</span>
+                <span class="tile-count" id="count-GREEN" style="color:var(--green-text);">0</span>
+              </div>
+              <p class="tile-desc" id="tileDesc-GREEN">
+                Running cases without any detected process deviations. All steps follow the process model in order.
+              </p>
+            </div>
+            <span class="tile-cta" style="color:var(--green-text);">Click to show cases →</span>
+          </button>
+
+          <!-- ORANGE: Minor Deviations -->
+          <button id="tile-ORANGE" class="status-tile orange" onclick="toggleCategoryField('ORANGE')">
+            <div>
+              <div class="tile-header">
+                <span class="tile-title" style="color:var(--orange-text);" id="tileTitle-ORANGE">🟡 Minor Deviations</span>
+                <span class="tile-count" id="count-ORANGE" style="color:var(--orange-text);">0</span>
+              </div>
+              <p class="tile-desc" id="tileDesc-ORANGE">
+                Cases where online conformance checking detected minor process deviations such as repeated or rework steps.
+              </p>
+            </div>
+            <span class="tile-cta" style="color:var(--orange-text);">Click to show cases →</span>
+          </button>
+
+          <!-- RED: Severe Deviations -->
+          <button id="tile-RED" class="status-tile red" onclick="toggleCategoryField('RED')">
+            <div>
+              <div class="tile-header">
+                <span class="tile-title" style="color:var(--red-text);" id="tileTitle-RED">🔴 Severe Deviations</span>
+                <span class="tile-count" id="count-RED" style="color:var(--red-text);">0</span>
+              </div>
+              <p class="tile-desc" id="tileDesc-RED">
+                Cases where online conformance checking detected critical deviations such as skipped mandatory approvals.
+              </p>
+            </div>
+            <span class="tile-cta" style="color:var(--red-text);">Click to show cases →</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- ===================================================================
+           LOWER MENU SECTION: 5 FIELDS INCLUDING "LAST UPDATE"
+           =================================================================== -->
+      <section class="lower-menu-section" aria-label="Process Management & Settings">
+        <div class="menu-fields-grid">
+          <button id="tile-view-last-update" class="menu-field-tile highlight-update-tile" onclick="toggleMenuField('view-last-update')">
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%;">
+              <span style="font-size:15.5px; font-weight:800; color:var(--indigo);">🆕 Last Update</span>
+              <span class="badge badge-NEW" id="menuTileLastUpdateBadge">0 New</span>
+            </div>
+            <div style="font-size:12.5px; color:var(--text-secondary);">
+              Inspect all cases that newly arrived in the currently selected time update.
+            </div>
+          </button>
+
+          <button id="tile-view-process-overview" class="menu-field-tile" onclick="toggleMenuField('view-process-overview')">
+            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">📂 Process Overview</div>
+            <div style="font-size:12.5px; color:var(--text-secondary);">
+              View all 3 processes, event case counts on their Petri net, and associated cases.
+            </div>
+          </button>
+
+          <button id="tile-view-case-overview" class="menu-field-tile" onclick="toggleMenuField('view-case-overview')">
+            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">📋 Case Overview</div>
+            <div style="font-size:12.5px; color:var(--text-secondary);">
+              Complete table of all cases across processes with Conformance &amp; SLA statuses.
+            </div>
+          </button>
+
+          <button id="tile-view-create-process" class="menu-field-tile" onclick="toggleMenuField('view-create-process')">
+            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">➕ Create New Process</div>
+            <div style="font-size:12.5px; color:var(--text-secondary);">
+              Upload an event log and select the detection methods for a new process.
+            </div>
+          </button>
+
+          <button id="tile-view-settings" class="menu-field-tile" onclick="toggleMenuField('view-settings')">
+            <div style="font-size:15.5px; font-weight:800; color:var(--blue);">⚙️ Settings</div>
+            <div style="font-size:12.5px; color:var(--text-secondary);">
+              Configure notifications for cases with minor and/or severe deviations.
+            </div>
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- =====================================================================
+         DYNAMIC PANEL 1: CATEGORY CASES & PETRI NET INSPECTOR
+         ===================================================================== -->
+    <section id="view-monitor" class="view-section">
+      <div id="casesInspectorGrid" class="cases-inspector-grid single-col">
+        <!-- Left: List of Cases in Selected Category -->
+        <div class="panel">
+          <div class="panel-header">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <div class="panel-title" id="categoryListTitle">Cases</div>
+              <span class="badge badge-GREEN" id="categoryListBadge"></span>
+            </div>
+            <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
+          </div>
+
+          <!-- Filter by Process & Detection Method -->
+          <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
+            <select id="monitorProcessFilter" class="form-select" style="width:auto; flex:1;" onchange="onChangeProcessFilter(this.value)">
+              <option value="ALL">All Processes</option>
+            </select>
+          </div>
+
+          <p style="font-size:12.5px; color:var(--text-secondary); margin-bottom:12px;">
+            Click on a case to inspect its Petri net, Conformance &amp; SLA status, and events (click outside any panel to return to Main Menu).
+          </p>
+          <div id="categoryCasesList" class="case-list-scroll">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <!-- Right: Petri Net + Current Case Position + Detection Method Switcher + Events -->
+        <div id="traceInspectorPanel" class="panel" style="display:none;">
+          <div class="panel-header">
+            <div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <div class="panel-title" id="traceInspectorTitle">Case Details</div>
+                <span id="traceInspectorUpdateBadge"></span>
+              </div>
+              <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;" id="traceInspectorSubtitle"></div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <span id="traceInspectorBadge" class="badge"></span>
+              <button class="btn" onclick="deselectCase()">✕ Deselect Case</button>
+            </div>
+          </div>
+
+          <!-- Per-Case Detection Method Selector (Switch between Conformance Checking and SLA & Timestamp Monitoring) -->
+          <div style="margin-bottom:8px; font-size:12px; font-weight:700; color:var(--text-secondary);">
+            Select Detection Method Status to Display:
+          </div>
+          <div class="method-switcher-grid" id="caseMethodSwitcher">
+            <!-- Populated dynamically -->
+          </div>
+
+          <!-- Status Summary Box -->
+          <div id="traceClassificationReason" style="padding:12px 15px; border-radius:9px; margin-bottom:16px; font-size:13px;"></div>
+
+          <!-- Visual SLA Deadline Overview Box (Shown when SLA & Timestamp Monitoring is selected) -->
+          <div id="traceSlaOverviewBox" class="sla-overview-box" style="display:none;"></div>
+
+          <!-- Petri Net Visualization -->
+          <div style="margin-bottom:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+              <strong style="font-size:13.5px; color:var(--blue);">
+                Petri Net — Current Case Position
+              </strong>
+              <span id="currentMarkingLabel" style="font-size:12.5px; font-weight:700; color:var(--blue);"></span>
+            </div>
+            <div id="petriNetSvgContainer" style="background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:12px; overflow-x:auto;">
+              <!-- SVG Petri Net rendered dynamically -->
+            </div>
+          </div>
+
+          <!-- Trace Events List -->
+          <div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+              <strong style="font-size:13.5px; color:var(--blue);">
+                Recorded Events in Trace
+              </strong>
+              <span id="traceMetricsLabel" style="font-size:12px; color:var(--text-secondary);"></span>
+            </div>
+            <div id="traceEventsContainer" class="trace-events-list">
+              <!-- Populated dynamically -->
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         DYNAMIC PANEL 2: LAST UPDATE CASES (NEWLY ARRIVED CASES)
+         ===================================================================== -->
+    <section id="view-last-update" class="view-section">
+      <div id="lastUpdateInspectorGrid" class="cases-inspector-grid single-col">
+        <div class="panel">
+          <div class="panel-header">
+            <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+              <div class="panel-title" id="lastUpdateListTitle">🆕 Cases Added in Last Update</div>
+              <span class="badge badge-NEW" id="lastUpdateCountBadge">0 New Cases</span>
+            </div>
+            <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
+          </div>
+          <p style="font-size:12.5px; color:var(--text-secondary); margin-bottom:12px;" id="lastUpdateSubtitle">
+            Cases that newly arrived in the selected stream update window. Click a case to inspect its Petri net and status.
+          </p>
+          <div id="lastUpdateCasesList" class="case-list-scroll">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+
+        <div id="lastUpdateTracePanel" class="panel" style="display:none;">
+          <!-- Reuses the same detailed inspector layout -->
+          <div id="lastUpdateTraceContent"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         DYNAMIC PANEL 3: PROCESS OVERVIEW
+         ===================================================================== -->
+    <section id="view-process-overview" class="view-section">
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">📂 Process Overview</div>
+          <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
+        </div>
+        <p style="font-size:13.5px; color:var(--text-secondary); margin-bottom:16px;">
+          Click on a process below to display its Petri net (with case counts per event when no case is selected) and the side list of its cases.
+        </p>
+        <div id="processOverviewList">
+          <!-- Populated dynamically -->
+        </div>
+
+        <!-- Appears when clicking a process in Process Overview: Side list of Cases + Petri Net -->
+        <div id="processDetailContainer" style="display:none; margin-top:20px;">
+          <div class="cases-inspector-grid">
+            <!-- Side List of Cases -->
+            <div class="panel" style="background:var(--bg-card); margin-bottom:0;">
+              <div class="panel-header">
+                <div class="panel-title" id="processSideListHeader">Process Cases</div>
+                <span class="badge badge-GREEN" id="processSideCasesCount">0 Cases</span>
+              </div>
+              <p style="font-size:12px; color:var(--text-secondary); margin-bottom:10px;">
+                Click a case to highlight its position on the Petri net (click again to deselect and return to overall process event counts).
+              </p>
+              <div id="processSideCasesList" class="case-list-scroll">
+                <!-- Populated dynamically -->
+              </div>
+            </div>
+
+            <!-- Main Area: Process Petri Net (+ Selected Case Events if a case is clicked) -->
+            <div class="panel" style="background:var(--bg-card); margin-bottom:0;">
+              <div class="panel-header">
+                <div>
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <div class="panel-title" id="processPetriTitle">Process Petri Net</div>
+                    <span id="processPetriUpdateBadge" style="display:none;"></span>
+                  </div>
+                  <div style="font-size:12.5px; color:var(--text-secondary);" id="processPetriSubtitle">
+                    Reference process model
+                  </div>
+                </div>
+                <div style="display:flex; gap:8px;">
+                  <button class="btn" id="processDeselectCaseBtn" style="display:none;" onclick="toggleProcessSideCase(selectedProcessCaseId)">
+                    ↺ Show Process Event Counts
+                  </button>
+                  <button class="btn" onclick="closeProcessDetail()">✕ Hide Petri Net</button>
+                </div>
+              </div>
+
+              <!-- Detection method switcher when a case is selected inside Process Overview -->
+              <div id="processCaseMethodWrap" style="display:none;">
+                <div style="margin-bottom:6px; font-size:12px; font-weight:700; color:var(--text-secondary);">
+                  Select Detection Method Status to Display:
+                </div>
+                <div class="method-switcher-grid" id="processCaseMethodSwitcher"></div>
+                <div id="processCaseReasonBox" style="padding:11px 14px; border-radius:9px; margin-bottom:14px; font-size:13px;"></div>
+                <div id="processCaseSlaBox" class="sla-overview-box" style="display:none;"></div>
+              </div>
+
+              <div style="margin-bottom:16px;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:8px;">
+                  <strong style="font-size:13.5px; color:var(--blue);">
+                    Petri Net Model
+                  </strong>
+                  <span id="processMarkingLabel" style="font-size:12.5px; font-weight:700; color:var(--blue);"></span>
+                </div>
+                <div id="processPetriNetSvgContainer" style="background:var(--bg-surface); border:1px solid var(--border); border-radius:10px; padding:12px; overflow-x:auto;">
+                  <!-- SVG Petri Net rendered dynamically -->
+                </div>
+              </div>
+
+              <div id="processSelectedCaseEventsWrap" style="display:none;">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                  <strong style="font-size:13.5px; color:var(--blue);">
+                    Recorded Events in Selected Case
+                  </strong>
+                  <span id="processCaseMetricsLabel" style="font-size:12px; color:var(--text-secondary);"></span>
+                </div>
+                <div id="processTraceEventsContainer" class="trace-events-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         DYNAMIC PANEL 4: CASE OVERVIEW
+         ===================================================================== -->
+    <section id="view-case-overview" class="view-section">
+      <div class="panel">
+        <div class="panel-header">
+          <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+            <div class="panel-title">📋 Case Overview</div>
+            <span class="badge badge-GREEN" id="overviewCountGreen">0 No Deviations</span>
+            <span class="badge badge-ORANGE" id="overviewCountOrange">0 Minor Deviations</span>
+            <span class="badge badge-RED" id="overviewCountRed">0 Severe Deviations</span>
+            <span class="badge badge-NEW" id="overviewCountNew">0 From Last Update</span>
+          </div>
+          <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
+        </div>
+
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:14px;">
+          <p style="font-size:13px; color:var(--text-secondary);">
+            All running cases at the selected stream time. Switch the active Detection Method in the header to compare Conformance vs. SLA &amp; Timestamp statuses.
+          </p>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="font-size:12px; font-weight:700; color:var(--text-secondary);">Process Filter:</span>
+            <select id="overviewProcessFilter" class="form-select" style="width:auto;" onchange="onChangeProcessFilter(this.value)">
+              <option value="ALL">All Processes</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Case ID</th>
+                <th>Update Status</th>
+                <th>Last Event Time</th>
+                <th>Process</th>
+                <th>Conformance Status</th>
+                <th>SLA &amp; Timestamp Status</th>
+                <th>Current Petri Net Position</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="caseOverviewTableBody">
+              <!-- Populated dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         DYNAMIC PANEL 5: CREATE NEW PROCESS (LOG UPLOAD & DETECTION METHODS)
+         ===================================================================== -->
+    <section id="view-create-process" class="view-section">
+      <div class="panel" style="max-width:780px; margin:0 auto;">
+        <div class="panel-header">
+          <div class="panel-title">➕ Create New Process</div>
+          <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
+        </div>
+
+        <div class="form-group">
+          <label>Process Name</label>
+          <input type="text" class="form-input" placeholder="Enter process name..." value="New Process" />
+        </div>
+
+        <div class="form-group">
+          <label>Upload Event Log (.xes, .csv)</label>
+          <label class="upload-dropzone" for="logFileInput">
+            <div style="font-size:26px; margin-bottom:6px;">📄</div>
+            <div style="font-weight:700; font-size:14px; margin-bottom:4px;" id="uploadFileName">
+              Click to upload an Event Log file
+            </div>
+            <div style="font-size:12px; color:var(--text-secondary);">
+              Supported formats: .xes, .csv, .json
+            </div>
+            <input type="file" id="logFileInput" style="display:none;"
+                   onchange="if(this.files[0]) document.getElementById('uploadFileName').innerText = 'Selected file: ' + this.files[0].name;" />
+          </label>
+        </div>
+
+        <div class="form-group">
+          <label>Select Detection Methods</label>
+          <div class="checkbox-list">
+            <label class="checkbox-item">
+              <input type="checkbox" checked />
+              <div>
+                <strong>Petri-Net Conformance Checking</strong>
+                <div style="font-size:12px; color:var(--text-secondary);">
+                  Checks incoming events against the process model to spot skipped or repeated steps.
+                </div>
+              </div>
+            </label>
+            <label class="checkbox-item">
+              <input type="checkbox" checked />
+              <div>
+                <strong>SLA &amp; Timestamp Monitoring</strong>
+                <div style="font-size:12px; color:var(--text-secondary);">
+                  Monitors step durations and visual case deadlines to highlight SLA exceedances.
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <div style="margin-top:22px; display:flex; gap:12px; align-items:center;">
+          <button type="button" class="btn btn-primary">
+            Confirm
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         DYNAMIC PANEL 6: SETTINGS
+         ===================================================================== -->
+    <section id="view-settings" class="view-section">
+      <div class="panel" style="max-width:720px; margin:0 auto;">
+        <div class="panel-header">
+          <div class="panel-title">⚙️ Settings — Case Notifications</div>
+          <button class="btn" onclick="deselectAll()">← Back to Main Menu</button>
+        </div>
+        <p style="font-size:13.5px; color:var(--text-secondary); margin-bottom:18px;">
+          Select whether you want to receive a notification for cases with <strong>Minor Deviations</strong> and/or <strong>Severe Deviations</strong>.
+        </p>
+
+        <div class="checkbox-list" style="gap:14px; padding:18px;">
+          <label class="checkbox-item" style="align-items:center; padding:10px 12px; border-radius:8px; background:var(--orange-bg); border:1px solid var(--orange-border);">
+            <input type="checkbox" id="settingNotifyYellow" />
+            <div>
+              <strong style="color:var(--orange-text); font-size:14.5px;">🟡 Notify on Minor Deviations</strong>
+              <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;">
+                Receive a notification whenever a case shows minor process or SLA deviations.
+              </div>
+            </div>
+          </label>
+
+          <label class="checkbox-item" style="align-items:center; padding:10px 12px; border-radius:8px; background:var(--red-bg); border:1px solid var(--red-border);">
+            <input type="checkbox" id="settingNotifyRed" checked />
+            <div>
+              <strong style="color:var(--red-text); font-size:14.5px;">🔴 Notify on Severe Deviations</strong>
+              <div style="font-size:12.5px; color:var(--text-secondary); margin-top:2px;">
+                Receive a notification whenever a case shows severe conformance or SLA deviations.
+              </div>
+            </div>
+          </label>
+        </div>
+
+        <div style="margin-top:20px; display:flex; align-items:center; gap:14px;">
+          <button type="button" class="btn btn-primary" onclick="saveNotificationSettings()">
+            Save Settings
+          </button>
+          <span id="settingsSavedBanner" style="display:none; font-size:13px; font-weight:700; color:var(--green-text);">
+            ✓ Notification settings saved.
+          </span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="/static/cockpit.js"></script>
+</body>
+</html>
