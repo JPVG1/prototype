@@ -4,9 +4,8 @@ FastAPI Server for Real-Time Streaming Events - Orchestration
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Optional
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -42,8 +41,8 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 
 @app.get("/api/state")
-def get_state(time_id: Optional[str] = Query(default=None)) -> dict:
-    return orchestrator.get_full_state(time_id=time_id)
+def get_state() -> dict:
+    return orchestrator.get_full_state()
 
 
 @app.post("/api/time")
@@ -64,7 +63,10 @@ app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 @app.get("/")
 def serve_index():
-    return FileResponse(str(FRONTEND_DIR / "index.html"))
+    return FileResponse(
+        str(FRONTEND_DIR / "index.html"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 if __name__ == "__main__":
